@@ -1,0 +1,4 @@
+# Build time only: PyInstaller turns the program into one executable per
+# platform (docs/BUILD.md). Nothing here is imported by the program or
+# shipped inside the build beyond what PyInstaller's own bootloader needs.
+pyinstaller==6.22.3

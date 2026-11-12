@@ -1,0 +1,8 @@
+# Development and CI only. SlowBooks Switchboard itself imports nothing outside
+# the Python standard library; nothing here goes into a build or installer.
+#
+# The official MCP Python client, pinned exactly, for the contract test
+# (tests/test_contract.py). Bumping it is a deliberate commit: rerun the
+# contract test and read docs/PROTOCOL.md's checklist.
+mcp==2.3.0
+pytest==9.0.2

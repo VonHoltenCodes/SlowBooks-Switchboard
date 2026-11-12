@@ -1,0 +1,297 @@
+name: Build
+
+# The console program, sbplive, built with PyInstaller on Windows, macOS
+# (Apple silicon) and Linux, smoke-tested, signed where the platform signs
+# (Azure Trusted Signing on Windows; Developer ID and notarization on macOS
+# when the signing secrets are present), with SHA256SUMS.<platform> beside
+# each. On a v* tag the files are attached to the GitHub release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows (signed)
+    runs-on: windows-latest
+    # The 'release' environment binds this job's OIDC token subject to
+    # repo:<owner>/<repo>:environment:release, which is what the Azure
+    # Trusted Signing federated credential trusts.
+    environment: release
+    permissions:
+      contents: write
+      id-token: write # required for federated OIDC -> Azure login
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Read version (and check it matches the tag)
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path sbplive/__init__.py -Pattern '__version__ = "(.+)"').Matches.Groups[1].Value
+          if (-not $ver) { Write-Error "Could not parse __version__ from sbplive/__init__.py"; exit 1 }
+          Write-Host "Version: $ver"
+          if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
+            $tagver = "${{ github.ref_name }}".TrimStart("v")
+            if ($tagver -ne $ver) { Write-Error "Tag ${{ github.ref_name }} != version $ver"; exit 1 }
+          }
+          "APP_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Install PyInstaller (pinned) and nothing else
+        run: python -m pip install -r requirements-build.txt
+      - name: Build
+        run: python -m PyInstaller --noconfirm --clean packaging/sbplive.spec
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=dist/sbplive.exe
+          "$exe" --version | tee version.txt
+          grep -q "sbplive $APP_VERSION" version.txt
+          export HOME="$RUNNER_TEMP/home" USERPROFILE="$RUNNER_TEMP/home"
+          export APPDATA="$RUNNER_TEMP/home/AppData/Roaming"
+          mkdir -p "$HOME"
+          set +e
+          "$exe" status | tee status.txt
+          code=$?
+          set -e
+          [ "$code" = "1" ]
+          grep -q "is not set up" status.txt
+      # OIDC login; no client secret stored.
+      - name: Azure login (OIDC for Trusted Signing)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign sbplive.exe (Trusted Signing)
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          endpoint: https://cus.codesigning.azure.net/
+          trusted-signing-account-name: easyamp-signing
+          certificate-profile-name: easyamp-public-trust
+          files-folder: ${{ github.workspace }}/dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com/
+          timestamp-digest: SHA256
+      - name: Check the signature
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature dist\sbplive.exe
+          Write-Host "$($sig.Status) $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { Write-Error "sbplive.exe is not validly signed"; exit 1 }
+      - name: Package and publish checksums (SHA256SUMS.windows)
+        shell: pwsh
+        run: |
+          $zip = "sbplive-$env:APP_VERSION-windows-x64.zip"
+          New-Item -ItemType Directory -Force -Path stage | Out-Null
+          Copy-Item dist\sbplive.exe, LICENSE, NOTICE, README.md stage\
+          Compress-Archive -Path stage\* -DestinationPath $zip -Force
+          $lines = foreach ($f in @($zip)) {
+            "{0}  {1}" -f (Get-FileHash $f -Algorithm SHA256).Hash.ToLower(), $f
+          }
+          [IO.File]::WriteAllText("$PWD\SHA256SUMS.windows", ($lines -join "`n") + "`n")
+          Get-Content SHA256SUMS.windows
+          "ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbplive-windows-x64
+          path: |
+            ${{ env.ZIP }}
+            SHA256SUMS.windows
+          if-no-files-found: error
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ZIP }}
+            SHA256SUMS.windows
+
+  macos:
+    name: macOS (signed and notarized when the secrets exist)
+    runs-on: macos-14
+    permissions:
+      contents: write
+    env:
+      HAS_MACOS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Read version (and check it matches the tag)
+        run: |
+          set -euo pipefail
+          APP_VERSION="$(python -c 'import sbplive; print(sbplive.__version__)')"
+          [[ "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            test "$GITHUB_REF_NAME" = "v$APP_VERSION"
+          fi
+          test "$(uname -m)" = "arm64"
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+      - name: Install PyInstaller (pinned) and nothing else
+        run: python -m pip install -r requirements-build.txt
+      - name: Import Developer ID certificate into a throwaway keychain
+        if: env.HAS_MACOS_CERT == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "$MACOS_CERT_P12" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Allow codesign to use the key without a UI prompt.
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security default-keychain -s "$KEYCHAIN"
+          identity="$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+          test -n "$identity"
+          echo "SBPLIVE_CODESIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: Build (signed by PyInstaller when an identity was imported)
+        run: python -m PyInstaller --noconfirm --clean packaging/sbplive.spec
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          exe=dist/sbplive
+          test "$(lipo -archs "$exe")" = "arm64"
+          "$exe" --version | tee version.txt
+          grep -q "sbplive $APP_VERSION" version.txt
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          set +e
+          "$exe" status | tee status.txt
+          code=$?
+          set -e
+          [ "$code" = "1" ]
+          grep -q "is not set up" status.txt
+      - name: Verify the signature
+        if: env.HAS_MACOS_CERT == 'true'
+        run: |
+          codesign --verify --strict --verbose=2 dist/sbplive
+          codesign -dvv dist/sbplive 2>&1 | grep -E "Authority=Developer ID Application|flags=.*runtime|Timestamp="
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          cp dist/sbplive LICENSE NOTICE README.md stage/
+          ZIP="sbplive-$APP_VERSION-macos-arm64.zip"
+          ditto -c -k --sequesterRsrc stage "$ZIP"
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+      - name: Store notarization credentials
+        if: env.HAS_MACOS_CERT == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          xcrun notarytool store-credentials sbplive-notary \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD"
+      - name: Notarize
+        if: env.HAS_MACOS_CERT == 'true'
+        run: |
+          set -euo pipefail
+          # A bare executable cannot be stapled; Gatekeeper looks the
+          # ticket up online on first run.
+          xcrun notarytool submit "$ZIP" --keychain-profile sbplive-notary --wait \
+            --output-format json | tee notary.json
+          python -c "import json, sys; s = json.load(open('notary.json'))['status']; print(s); sys.exit(s != 'Accepted')"
+      - name: Say the build is unsigned
+        if: env.HAS_MACOS_CERT != 'true'
+        run: echo "::warning::MACOS_CERT_P12 is not set, so the macOS program is unsigned and not notarized."
+      - name: Publish checksums (SHA256SUMS.macos)
+        run: shasum -a 256 "$ZIP" > SHA256SUMS.macos && cat SHA256SUMS.macos
+      - name: Delete throwaway keychain
+        if: always() && env.HAS_MACOS_CERT == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbplive-macos-arm64
+          path: |
+            ${{ env.ZIP }}
+            SHA256SUMS.macos
+          if-no-files-found: error
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ZIP }}
+            SHA256SUMS.macos
+
+  linux:
+    name: Linux
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Read version (and check it matches the tag)
+        run: |
+          set -euo pipefail
+          APP_VERSION="$(python -c 'import sbplive; print(sbplive.__version__)')"
+          [[ "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            test "$GITHUB_REF_NAME" = "v$APP_VERSION"
+          fi
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+      - name: Install PyInstaller (pinned) and nothing else
+        run: python -m pip install -r requirements-build.txt
+      - name: Build
+        run: python -m PyInstaller --noconfirm --clean packaging/sbplive.spec
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          exe=dist/sbplive
+          "$exe" --version | tee version.txt
+          grep -q "sbplive $APP_VERSION" version.txt
+          export HOME="$RUNNER_TEMP/home" XDG_CONFIG_HOME="$RUNNER_TEMP/home/.config"
+          mkdir -p "$HOME"
+          set +e
+          "$exe" status | tee status.txt
+          code=$?
+          set -e
+          [ "$code" = "1" ]
+          grep -q "is not set up" status.txt
+      - name: Package and publish checksums (SHA256SUMS.linux)
+        run: |
+          set -euo pipefail
+          TGZ="sbplive-$APP_VERSION-linux-x86_64.tar.gz"
+          mkdir -p "stage/sbplive-$APP_VERSION"
+          cp dist/sbplive LICENSE NOTICE README.md "stage/sbplive-$APP_VERSION/"
+          tar -czf "$TGZ" -C stage "sbplive-$APP_VERSION"
+          sha256sum "$TGZ" > SHA256SUMS.linux
+          cat SHA256SUMS.linux
+          echo "TGZ=$TGZ" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbplive-linux-x86_64
+          path: |
+            ${{ env.TGZ }}
+            SHA256SUMS.linux
+          if-no-files-found: error
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.TGZ }}
+            SHA256SUMS.linux
