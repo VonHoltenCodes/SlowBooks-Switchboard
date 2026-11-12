@@ -103,7 +103,9 @@ def build_registry(client: ApiClient) -> Registry:
             READ_ONLY,
             "List one kind of record. Filters pass through to the API as query "
             "parameters (for customers, {'search': 'Acme'}); describe_operation "
-            "with GET and the kind's route lists them.",
+            "with GET and the kind's route lists them. journal_entries lists "
+            "the current fiscal year unless the filters give start_date or "
+            "end_date.",
             kind=_KIND,
             filters="Query parameters for the list route, by name.",
             limit="The most records to return.",

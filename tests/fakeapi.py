@@ -42,7 +42,12 @@ COLLECTIONS = {
     "/api/bill-payments": ("bill_payments", "Bill payment"),
 }
 KEYED = {"/api/payments", "/api/bill-payments"}
-SERVER_LIMIT = {"/api/invoices", "/api/bills", "/api/banking/transactions"}
+SERVER_LIMIT = {
+    "/api/invoices",
+    "/api/bills",
+    "/api/banking/transactions",
+    "/api/journal",
+}
 
 
 def load_spec() -> dict:
@@ -61,6 +66,8 @@ ACCOUNTANT_READ_REFUSAL = (
 
 class FakeBooks:
     def __init__(self, spec=None, token: str = TOKEN_FAKE, role: str = "bookkeeper"):
+        # 2.32.0 answers the journal list as a page envelope; False = 2.31.x's list
+        self.journal_envelope = True
         self.spec = spec if spec is not None else load_spec()
         self.token = token
         self.role = role
@@ -218,6 +225,17 @@ class FakeBooks:
                 rows = [r for r in rows if search.lower() in r.get("name", "").lower()]
             if path in SERVER_LIMIT and params.get("limit") is not None:
                 rows = rows[: self._limit(params)]
+            if path == "/api/journal" and self.journal_envelope:
+                # SlowBooks Pro 2.32.0: the journal list is a page envelope
+                return 200, {
+                    "entries": rows,
+                    "total": len(self.records[path]),
+                    "skip": 0,
+                    "limit": self._limit(params, 100),
+                    "start_date": "2026-01-01",
+                    "end_date": "2026-12-31",
+                    "default_range": True,
+                }
             return 200, rows
         m = re.fullmatch(r"(/api/[a-z-]+)/(\d+)", path)
         if m and m.group(1) in self.records:

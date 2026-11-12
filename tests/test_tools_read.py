@@ -321,6 +321,35 @@ def test_list_records_limit_and_kinds(api):
         tools.get_record(api, "bank_transactions", 1)
 
 
+def _journal_entry(api, description):
+    return api.post(
+        "/api/journal",
+        {
+            "date": "2026-03-01",
+            "description": description,
+            "lines": [
+                {"account_id": 1, "debit": 10, "credit": 0},
+                {"account_id": 2, "debit": 0, "credit": 10},
+            ],
+        },
+    )
+
+
+def test_list_journal_entries_unwraps_the_page_envelope(api, books):
+    """SlowBooks Pro 2.32.0 answers GET /api/journal as a page envelope
+    ({entries, total, ...}, the fiscal year by default); a 2.31.x server
+    answers a bare list. The tool hands back the rows either way, and the
+    page's limit goes to the server."""
+    for description in ("one", "two", "three"):
+        _journal_entry(api, description)
+    rows = tools.list_records(api, "journal_entries", limit=2)
+    assert isinstance(rows, list) and len(rows) == 2
+    assert [r["description"] for r in rows] == ["one", "two"]
+    books.journal_envelope = False
+    rows = tools.list_records(api, "journal_entries", limit=2)
+    assert isinstance(rows, list) and len(rows) == 2
+
+
 def test_reports(api):
     names = [r["name"] for r in tools.list_reports(api)]
     assert "profit-loss" in names and "balance-sheet" in names

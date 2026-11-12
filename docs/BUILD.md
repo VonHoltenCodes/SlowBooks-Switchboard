@@ -47,7 +47,7 @@ will live **before** running setup; if it moves, run setup again.
   then the contract test with the pinned official MCP client from
   `requirements-dev.txt`, which must not skip.
 - `.github/workflows/build.yml`, on a `v*` tag and on manual dispatch: the
-  program built on `windows-latest`, `macos-14` (Apple silicon) and
+  program built on `windows-latest`, `macos-15` (Apple silicon) and
   `ubuntu-22.04` (an older glibc, so the Linux build runs on newer systems
   too), each smoke-tested (`--version`, and `status` in an empty home).
   - **Windows:** signed with Azure Trusted Signing, as SlowBooks Pro is

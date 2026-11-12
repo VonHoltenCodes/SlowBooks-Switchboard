@@ -30,7 +30,7 @@ KINDS = {
     "bank_transactions": "/api/banking/transactions",
 }
 # Routes that take their own `limit`, so the page is cut server-side too.
-_SERVER_LIMIT = {"invoices", "bills", "bank_transactions"}
+_SERVER_LIMIT = {"invoices", "bills", "bank_transactions", "journal_entries"}
 
 
 def _kind_path(kind: str) -> str:
@@ -185,6 +185,12 @@ def list_records(
     if kind in _SERVER_LIMIT:
         params.setdefault("limit", limit)
     rows = client.get(path, params)
+    # Since SlowBooks Pro 2.32.0 the journal list answers a page envelope,
+    # {entries, total, skip, limit, start_date, end_date, default_range}, the
+    # current fiscal year unless the filters name a date; earlier servers
+    # answer a bare list. The tool hands back the rows either way.
+    if isinstance(rows, dict) and isinstance(rows.get("entries"), list):
+        rows = rows["entries"]
     return rows[:limit] if isinstance(rows, list) else rows
 
 
