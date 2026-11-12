@@ -114,7 +114,7 @@ jobs:
 
   macos:
     name: macOS (signed and notarized when the secrets exist)
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     env:
