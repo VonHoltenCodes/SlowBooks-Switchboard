@@ -115,9 +115,25 @@ SENTENCE_LOCKED = (
     "Too many sign-ins failed from this address. Wait ten minutes and try again."
 )
 SENTENCE_EXPIRED_PAGE = (
-    "This sign-in page has expired or was already used. Go back to Claude and "
-    "connect again."
+    "This sign-in page has expired or was already used. Go back to your "
+    "assistant and connect again."
 )
+
+# The consent line names the asking app by the name it registered (RFC 7591
+# client_name, or its metadata document's) when that is a short plain name
+# such as "Claude" or "Grok", and says "your assistant" otherwise. It is
+# only ever shown as escaped text.
+ASSISTANT_FALLBACK = "your assistant"
+_ASSISTANT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .'()_+-]{0,39}")
+
+
+def assistant_name(name) -> str:
+    """The asking app's name for the consent line, or "your assistant"."""
+    if isinstance(name, str):
+        name = " ".join(name.split())
+        if _ASSISTANT_NAME.fullmatch(name):
+            return name
+    return ASSISTANT_FALLBACK
 
 
 class SignInRefused(Exception):
@@ -246,7 +262,7 @@ def check_public_url(raw: str) -> str:
         shown = f"[{host}]" if ":" in host else host
         return f"{parts.scheme}://{shown}" + (f":{port}" if port else "")
     raise ValueError(
-        f"{raw!r} does not start with https://. Claude signs in only over HTTPS; "
+        f"{raw!r} does not start with https://. An assistant signs in only over HTTPS; "
         "give the tunnel's https:// address."
     )
 
@@ -441,6 +457,8 @@ class OAuthServer:
         resource_path: str = "/mcp",
         sign_in_name: str = "the SlowBooks Pro administrator sign-in",
         allowed_redirects=ALLOWED_REDIRECTS,
+        notice: str = "",
+        notice_links=(),
     ):
         self.issuer = check_public_url(issuer)
         self.resource = self.issuer + resource_path
@@ -453,6 +471,14 @@ class OAuthServer:
         self.clock = clock
         self.sign_in_name = sign_in_name
         self.allowed_redirects = tuple(allowed_redirects)
+        # A door's own words under the sign-in form (a disclaimer, say),
+        # and (label, https URL) links after them; none by default.
+        self.notice = notice
+        self.notice_links = tuple(
+            (label, url)
+            for label, url in notice_links
+            if isinstance(url, str) and url.startswith("https://")
+        )
         # Single-use codes and refresh rotation must not race: one lock
         # around every read-then-write on the storage.
         self._lock = threading.Lock()
@@ -754,7 +780,7 @@ class OAuthServer:
         ):
             raise _OAuthError(
                 "invalid_request",
-                "The address Claude asked to return to is not one this door "
+                "The address the app asked to return to is not one this door "
                 "accepts, so the sign-in stops here.",
             )
         values = {"redirect_uri": redirect, "state": params.get("state")}
@@ -840,7 +866,20 @@ class OAuthServer:
 
     def _authorize_post(self, req: Request) -> Response:
         origin = req.header("Origin")
-        if origin is not None and origin.rstrip("/").lower() != self.issuer.lower():
+        # Firefox sends "Origin: null" on a form posted from a page whose
+        # referrer policy is no-referrer, as this page's is; its
+        # Sec-Fetch-Site still says where the form came from. A browser
+        # sets that header itself and a page cannot forge it.
+        same_site_form = (
+            origin is not None
+            and origin.strip().lower() == "null"
+            and (req.header("Sec-Fetch-Site") or "").strip().lower() == "same-origin"
+        )
+        if (
+            origin is not None
+            and not same_site_form
+            and origin.rstrip("/").lower() != self.issuer.lower()
+        ):
             return self._page(403, error="This sign-in came from another site.")
         ctype = (req.header("Content-Type") or "").split(";", 1)[0].strip().lower()
         if ctype != "application/x-www-form-urlencoded" or len(req.body) > MAX_FORM:
@@ -1068,10 +1107,11 @@ class OAuthServer:
             about = {}
         company = about.get("company") or "this company"
         role = about.get("role")
+        assistant = assistant_name(pending.get("client_name"))
         asking = (
-            f"Let Claude work the books of {company} as {role}?"
+            f"Let {assistant} work the books of {company} as {role}?"
             if role
-            else f"Let Claude work the books of {company}?"
+            else f"Let {assistant} work the books of {company}?"
         )
         redirect_host = _host_of(pending["redirect_uri"])
         if pending.get("document"):
@@ -1094,7 +1134,7 @@ class OAuthServer:
             warning = (
                 f"{redirect_host} is a program on your own computer, not a "
                 "website. Any program on this computer could be waiting at "
-                "that address: continue only if you just asked Claude Code (or "
+                f"that address: continue only if you just asked {assistant} (or "
                 "another program you trust) to connect."
             )
         try:
@@ -1129,7 +1169,7 @@ class OAuthServer:
             + "".join(inputs)
             + "<button type=submit name=action value=approve>Sign in and allow</button> "
             "<button type=submit name=action value=deny formnovalidate>Do not allow</button>"
-            "</form>"
+            "</form>" + self._notice_html()
         )
         return self._html(
             status,
@@ -1137,6 +1177,21 @@ class OAuthServer:
             body,
             form_targets=[_origin_of(pending["redirect_uri"])],
             headers=headers,
+        )
+
+    def _notice_html(self) -> str:
+        if not self.notice and not self.notice_links:
+            return ""
+        links = " ".join(
+            f'<a href="{html.escape(url)}" rel="noopener noreferrer">'
+            f"{html.escape(label)}</a>"
+            for label, url in self.notice_links
+        )
+        return (
+            "<p class=note>"
+            + html.escape(self.notice)
+            + (" " + links if links else "")
+            + "</p>"
         )
 
     def _page(self, status: int, error: str) -> Response:
@@ -1182,6 +1237,7 @@ _STYLE = (
     "font:inherit;margin-top:.25rem}"
     "button{font:inherit;padding:.5rem 1rem;margin:.75rem .5rem 0 0}"
     ".warn{background:#fff4d6;padding:.5rem}.err{color:#a40000;font-weight:600}"
+    ".note{font-size:.875rem;color:#555;margin-top:1.25rem}"
 )
 _STYLE_HASH = "sha256-" + base64.b64encode(
     hashlib.sha256(_STYLE.encode("utf-8")).digest()

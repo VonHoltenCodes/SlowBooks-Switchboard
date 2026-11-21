@@ -47,7 +47,9 @@ door needs:
   `code_challenge` with `code_challenge_method=S256` (a request without PKCE
   is refused), `scope`, and `resource` (must be this door's MCP URL). It
   shows one page: the sign-in fields the door asks for, what is being asked
-  ("Let Claude work the books of <company> as <role>"), the redirect host in
+  ("Let <assistant> work the books of <company> as <role>", naming the
+  asking app by its registered name when that is a short plain name such as
+  Claude or Grok, else "your assistant"), the redirect host in
   plain words, and the extra warning the MCP specification asks for when the
   redirect is a loopback address. `POST` of that page verifies the sign-in
   through a function the door supplies (`verify(fields) -> principal or

@@ -214,8 +214,15 @@ def test_tools_list(ready):
     tools = ready.handle_message(_req(2, "tools/list"))["result"]["tools"]
     assert "nextCursor" not in tools
     names = [t["name"] for t in tools]
-    assert len(names) == len(set(names)) == 21
-    for name in ("find_operations", "describe_operation", "call_operation"):
+    assert len(names) == len(set(names)) == 23
+    for name in (
+        "find_operations",
+        "describe_operation",
+        "api_get",
+        "post_operation",
+        "update_operation",
+        "delete_operation",
+    ):
         assert name in names
     for t in tools:
         assert t["description"] and t["title"]
@@ -248,6 +255,14 @@ def test_tools_call_read(ready):
 def test_tools_call_unknown_tool_is_a_protocol_error(ready):
     reply = ready.handle_message(_req(4, "tools/call", {"name": "nope"}))
     assert reply["error"] == {"code": INVALID_PARAMS, "message": "Unknown tool: nope"}
+
+
+def test_a_retired_tool_says_where_its_work_went(ready):
+    reply = ready.handle_message(_req(4, "tools/call", {"name": "call_operation"}))
+    assert reply["error"]["code"] == INVALID_PARAMS
+    message = reply["error"]["message"]
+    assert message.startswith("Unknown tool: call_operation. It was split")
+    assert "api_get reads" in message and "delete_operation" in message
 
 
 @pytest.mark.parametrize(
@@ -446,7 +461,7 @@ def test_modern_tools_call_read_and_write(session, books):
             "tools/call",
             {
                 "name": "create_customer",
-                "arguments": {"data": {"name": "Modern Era Co"}},
+                "arguments": {"data": {"name": "Modern Era Co"}, "asked_user": True},
             },
         )
     )

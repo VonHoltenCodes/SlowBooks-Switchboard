@@ -67,8 +67,8 @@ async def _session(server_env, mode, books):
         write = await c.call_tool("record_payment", {"data": payment, "key": KEY})
         again = await c.call_tool("record_payment", {"data": payment, "key": KEY})
         refused = await c.call_tool(
-            "call_operation",
-            {"method": "POST", "path": "/api/customers", "body": {"nam": "Typo"}},
+            "post_operation",
+            {"path": "/api/customers", "body": {"nam": "Typo"}},
         )
     return version, discovered, identity, listed, read, write, again, refused
 
@@ -95,10 +95,27 @@ def test_official_client_lists_reads_and_writes(server_env, books, mode, expecte
         # Modern-only mode synthesizes its DiscoverResult, so the server's
         # name is known only once a handshake or the probe has run.
         assert identity.name == "sbplive"
+        # The official client's own Implementation type takes the title,
+        # the website and the icons (data: URIs on stdio).
+        assert identity.title == "SlowBooks Pro"
+        assert identity.website_url == "https://www.slowbookspro.com/connect/"
+        assert [i.mime_type for i in identity.icons] == ["image/png", "image/png"]
+        assert [i.sizes for i in identity.icons] == [["48x48"], ["96x96"]]
+        assert all(i.src.startswith("data:image/png;base64,") for i in identity.icons)
 
     tools = {t.name: t for t in listed.tools}
-    assert len(tools) == 21
-    assert {"find_operations", "describe_operation", "call_operation"} <= set(tools)
+    assert len(tools) == 23
+    general = {"find_operations", "describe_operation", "api_get"}
+    writes = {"post_operation", "update_operation", "delete_operation"}
+    assert general | writes <= set(tools)
+    assert "call_operation" not in tools
+    for name in general:
+        assert tools[name].annotations.read_only_hint is True
+    for name in writes:
+        assert tools[name].annotations.read_only_hint is False
+        assert tools[name].annotations.destructive_hint is True
+        assert tools[name].annotations.title
+        assert "https://www.slowbookspro.com/docs/api/" in tools[name].description
     assert tools["context"].annotations.read_only_hint is True
     assert tools["void_record"].annotations.destructive_hint is True
     assert tools["record_payment"].annotations.idempotent_hint is True
@@ -177,7 +194,7 @@ def test_official_client_over_http(http_door, books, mode, expected):
     )
     assert version == expected
     tools = {t.name: t for t in listed.tools}
-    assert len(tools) == 21
+    assert len(tools) == 23
     assert tools["void_record"].annotations.destructive_hint is True
     assert read.is_error is False
     assert json.loads(read.content[0].text)["company"] == "Acme Fence Test Co"
@@ -324,7 +341,7 @@ def test_official_client_signs_in_with_oauth(oauth_door, books, mode, expected):
     assert version == expected
     assert seen["pages"] == 1 and seen["iss"] == oauth_door.base
     assert provider.context.client_info.client_id.startswith("sbo_client_")  # DCR
-    assert len(listed.tools) == 21
+    assert len(listed.tools) == 23
     assert json.loads(read.content[0].text)["company"] == "Acme Fence Test Co"
     first = provider.context.current_tokens
     assert first.refresh_token
@@ -371,7 +388,7 @@ def test_official_client_with_a_client_id_metadata_document(books, fake_server, 
         assert version == (MODERN if mode == MODERN else PROTOCOL_VERSION)
         assert provider.context.client_info.client_id == CIMD_URL  # no DCR
         assert docs.hits == 1 and seen["pages"] == 1
-        assert len(listed.tools) == 21
+        assert len(listed.tools) == 23
         assert json.loads(read.content[0].text)["company"] == "Acme Fence Test Co"
     finally:
         door.close()

@@ -85,7 +85,7 @@ def test_handshake_and_calls_over_stdio_with_no_site_packages(server_env):
             "tools/call",
             {
                 "name": "create_customer",
-                "arguments": {"data": {"name": "Bare Python Co"}},
+                "arguments": {"data": {"name": "Bare Python Co"}, "asked_user": True},
             },
         ),
     ]
@@ -106,7 +106,7 @@ def test_handshake_and_calls_over_stdio_with_no_site_packages(server_env):
     # (-32602), and a dual-era client falls back to initialize on it.
     assert replies[0]["error"]["code"] == -32602
     assert replies[1]["result"]["protocolVersion"] == PROTOCOL_VERSION
-    assert len(replies[2]["result"]["tools"]) == 21
+    assert len(replies[2]["result"]["tools"]) == 23
     ctx = json.loads(replies[3]["result"]["content"][0]["text"])
     assert ctx["company"] == "Acme Fence Test Co"
     made = json.loads(replies[4]["result"]["content"][0]["text"])
@@ -134,7 +134,7 @@ def test_modern_requests_over_stdio_with_no_site_packages(server_env):
     replies = [json.loads(line) for line in r.stdout.splitlines()]
     assert [x["id"] for x in replies] == [1, 2, 3]
     assert replies[0]["result"]["supportedVersions"][0] == MODERN_VERSIONS[0]
-    assert len(replies[1]["result"]["tools"]) == 21
+    assert len(replies[1]["result"]["tools"]) == 23
     assert all(x["result"]["resultType"] == "complete" for x in replies)
     ctx = json.loads(replies[2]["result"]["content"][0]["text"])
     assert ctx["company"] == "Acme Fence Test Co"

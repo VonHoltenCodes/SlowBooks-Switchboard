@@ -9,7 +9,7 @@ or written to ~/.slowbookspro, and the checkout itself is only read (no
 bytecode is written there). The database is migrated and its chart of
 accounts seeded as the product's Docker entrypoint does. The test makes the company's password, makes a
 bookkeeper API token through the app's own route, runs `setup --yes`, then
-calls context, a find_operations + call_operation read, create_customer, a
+calls context, a find_operations + api_get read, create_customer, a
 keyed payment twice, and two admin routes to hear the API's refusal.
 
 Skipped, with the reason, when there is no product checkout, the checkout
@@ -292,8 +292,12 @@ def test_setup_and_the_tools_against_the_real_app(product, tmp_path, home):
         json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}),
         _tool(2, "context", {}),
         _tool(3, "find_operations", {"query": "list customers", "limit": 5}),
-        _tool(4, "call_operation", {"method": "GET", "path": "/api/customers"}),
-        _tool(5, "create_customer", {"data": {"name": "Quillfeather Gardens"}}),
+        _tool(4, "api_get", {"path": "/api/customers"}),
+        _tool(
+            5,
+            "create_customer",
+            {"data": {"name": "Quillfeather Gardens"}, "asked_user": True},
+        ),
     ]
     first = subprocess.run(
         [server["command"], *server["args"]],
@@ -327,11 +331,11 @@ def test_setup_and_the_tools_against_the_real_app(product, tmp_path, home):
     script = script[:2] + [
         _tool(6, "record_payment", {"data": payment, "key": PAY_KEY}),
         _tool(7, "record_payment", {"data": payment, "key": PAY_KEY}),
-        _tool(8, "call_operation", {"method": "GET", "path": "/api/users"}),
+        _tool(8, "api_get", {"path": "/api/users"}),
         _tool(
             9,
-            "call_operation",
-            {"method": "GET", "path": "/api/company-file/encryption"},
+            "api_get",
+            {"path": "/api/company-file/encryption"},
         ),
         _tool(10, "list_records", {"kind": "payments"}),
     ]

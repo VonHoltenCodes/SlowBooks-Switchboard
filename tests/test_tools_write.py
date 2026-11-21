@@ -3,7 +3,7 @@ chart of accounts."""
 
 import pytest
 
-from sbplive import tools
+from sbplive import operations, tools
 from sbplive.client import ApiClient, ApiError
 from sbplive.server import build_registry
 
@@ -11,7 +11,7 @@ LINE = {"description": "work", "quantity": 1, "rate": "100.00"}
 
 
 def _customer_invoice(api):
-    cust = tools.create_customer(api, {"name": "Pay Me Co"})
+    cust = tools.create_customer(api, {"name": "Pay Me Co"}, asked_user=True)
     inv = tools.create_invoice(
         api, {"customer_id": cust["id"], "date": "2026-09-10", "lines": [LINE]}
     )
@@ -19,7 +19,7 @@ def _customer_invoice(api):
 
 
 def _bill(api, acct):
-    vendor = tools.create_vendor(api, {"name": "Lumber Yard"})
+    vendor = tools.create_vendor(api, {"name": "Lumber Yard"}, asked_user=True)
     bill = tools.create_bill(
         api,
         {
@@ -32,9 +32,11 @@ def _bill(api, acct):
 
 
 def test_create_master_records_and_find_them(api, seed_accounts):
-    cust = tools.create_customer(api, {"name": "Made Customer"})
-    vend = tools.create_vendor(api, {"name": "Made Vendor"})
-    item = tools.create_item(api, {"name": "Made Item", "item_type": "service"})
+    cust = tools.create_customer(api, {"name": "Made Customer"}, asked_user=True)
+    vend = tools.create_vendor(api, {"name": "Made Vendor"}, asked_user=True)
+    item = tools.create_item(
+        api, {"name": "Made Item", "item_type": "service"}, asked_user=True
+    )
     for kind, rec in (("customers", cust), ("vendors", vend), ("items", item)):
         assert tools.get_record(api, kind, rec["id"])["name"] == rec["name"]
 
@@ -52,6 +54,7 @@ def test_create_invoice_bill_expense_journal(api, seed_accounts):
             "expense_account_id": seed_accounts["6000"].id,
             "paid_from_account_id": seed_accounts["1000"].id,
         },
+        asked_user=True,
     )
     assert exp["id"]
     lines = [
@@ -72,7 +75,7 @@ def test_create_invoice_bill_expense_journal(api, seed_accounts):
 
 def test_unknown_field_passes_the_422_on(api, seed_accounts):
     with pytest.raises(ApiError) as exc:
-        tools.create_customer(api, {"name": "X", "bogus_field": 1})
+        tools.create_customer(api, {"name": "X", "bogus_field": 1}, asked_user=True)
     assert exc.value.status == 422 and "bogus_field" in exc.value.detail
 
 
@@ -144,8 +147,8 @@ def test_void_payment_passes_fee_refunded(api):
 
 
 def test_writes_are_audited_as_the_token(api, seed_accounts):
-    made = tools.create_customer(api, {"name": "Audited Co"})
-    rows = tools.api_get(api, "/api/audit", {"table_name": "customers"})
+    made = tools.create_customer(api, {"name": "Audited Co"}, asked_user=True)
+    rows = operations.api_get(api, "/api/audit", {"table_name": "customers"})
     mine = [r for r in rows if r["record_id"] == made["id"]]
     assert mine and mine[0]["username"] == "token:mcp-test"
 
@@ -167,16 +170,20 @@ def test_unknown_outcome_sentences():
 
 def test_server_registers_the_tools_with_the_right_hints(api):
     listed = {t["name"]: t for t in build_registry(api).definitions()}
-    assert len(listed) == 21  # Keith's eighteen and the three general tools
+    # Keith's eighteen and the general tools: find, describe and the three
+    # writes (reads go through api_get).
+    assert len(listed) == 23
     hints = {n: t["annotations"] for n, t in listed.items()}
     writes = [n for n, a in hints.items() if not a["readOnlyHint"]]
-    assert len(writes) == 11
+    assert len(writes) == 13
     assert hints["void_record"]["destructiveHint"] is True
     idem = {n for n in writes if hints[n]["idempotentHint"]}
-    assert idem == {"record_payment", "record_bill_payment"}
-    assert sorted(n for n in writes if hints[n]["destructiveHint"]) == [
-        "call_operation",
+    assert idem == {
+        "record_payment",
+        "record_bill_payment",
+        "delete_operation",
         "void_record",
-    ]
+    }
+    assert all(hints[n]["destructiveHint"] for n in writes)  # test_annotations.py
     assert all(a["openWorldHint"] is False for a in hints.values())
     assert "client" not in listed["record_payment"]["inputSchema"]["properties"]

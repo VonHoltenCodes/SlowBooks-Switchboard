@@ -40,8 +40,34 @@ COLLECTIONS = {
     "/api/journal": ("journal_entries", "Journal entry"),
     "/api/payments": ("payments", "Payment"),
     "/api/bill-payments": ("bill_payments", "Bill payment"),
+    "/api/estimates": ("estimates", "Estimate"),
+    "/api/sales-receipts": ("sales_receipts", "Sales receipt"),
+    "/api/credit-memos": ("credit_memos", "Credit memo"),
+}
+
+# What the app fills in on a create when a field is left out (its schemas
+# and routes): the customer's and vendor's terms, taxable and 1099; an
+# invoice's or bill's terms and due date; a bill's number.
+FILLED = {
+    "/api/customers": {"terms": "Net 30", "is_taxable": True},
+    "/api/vendors": {"terms": "Net 30", "is_1099_vendor": False},
+    "/api/invoices": {"terms": "Net 30", "due_date": "2026-12-19"},
+    "/api/bills": {
+        "terms": "Net 30",
+        "due_date": "2026-12-19",
+        "bill_number": "AUTO-1",
+    },
+    "/api/payments": {"deposit_to_account_id": None},
+    "/api/bill-payments": {"pay_from_account_id": None},
 }
 KEYED = {"/api/payments", "/api/bill-payments"}
+# What the app answers a DELETE with: customers, vendors and items are made
+# inactive (they keep their history); an account is removed.
+DEACTIVATES = {
+    "/api/customers": "Customer deactivated",
+    "/api/vendors": "Vendor deactivated",
+    "/api/items": "Item deactivated",
+}
 SERVER_LIMIT = {
     "/api/invoices",
     "/api/bills",
@@ -68,6 +94,8 @@ class FakeBooks:
     def __init__(self, spec=None, token: str = TOKEN_FAKE, role: str = "bookkeeper"):
         # 2.32.0 answers the journal list as a page envelope; False = 2.31.x's list
         self.journal_envelope = True
+        # a tax_note the app itself puts on a new invoice's answer, when set
+        self.api_tax_note = None
         self.spec = spec if spec is not None else load_spec()
         self.token = token
         self.role = role
@@ -80,6 +108,8 @@ class FakeBooks:
             "company_name": COMPANY,
             "company_type": "llc",
             "closing_date": None,
+            # a percent, as Settings keeps it
+            "default_tax_rate": "6.25",
         }
         # name -> {"pw": ..., "role": ...}; one user is the single-user
         # install, whose sign-in is the password alone.
@@ -91,8 +121,10 @@ class FakeBooks:
         for number, name, kind in (
             ("1000", "Checking", "asset"),
             ("1100", "Accounts Receivable", "asset"),
+            ("1200", "Undeposited Funds", "asset"),
             ("2000", "Accounts Payable", "liability"),
             ("4000", "Sales", "income"),
+            ("5000", "Cost of Goods Sold", "cogs"),
             ("6000", "Supplies", "expense"),
         ):
             row = self._store(
@@ -101,6 +133,7 @@ class FakeBooks:
                 audited=False,
             )
             self.accounts[number] = row
+        self.accounts["1000"]["bank_kind"] = "checking"
 
     # -- helpers ---------------------------------------------------------
 
@@ -185,6 +218,24 @@ class FakeBooks:
             return self._get(path, params)
         if method == "POST":
             return self._post(path, params, body, headers)
+        if method == "DELETE":
+            return self._delete(path)
+        return 405, {"detail": "Method Not Allowed"}
+
+    def _delete(self, path):
+        m = re.fullmatch(r"(/api/[a-z-]+)/(\d+)", path)
+        if not m or m.group(1) not in self.records:
+            return 405, {"detail": "Method Not Allowed"}
+        route, rid = m.group(1), int(m.group(2))
+        row = self.records[route].get(rid)
+        if row is None:
+            return 404, {"detail": f"{COLLECTIONS[route][1]} {rid} not found"}
+        if route in DEACTIVATES:
+            row["is_active"] = False
+            return 200, {"message": DEACTIVATES[route]}
+        if route == "/api/accounts":
+            del self.records[route][rid]
+            return 200, {"message": "Account deleted"}
         return 405, {"detail": "Method Not Allowed"}
 
     def _get(self, path, params):
@@ -284,9 +335,14 @@ class FakeBooks:
                     "detail": f"Debits ({debit:.2f}) must equal credits "
                     f"({credit:.2f})."
                 }
-        row = self._store(path, dict(body))
+        filled = {k: v for k, v in FILLED.get(path, {}).items() if body.get(k) is None}
+        row = self._store(path, {**dict(body), **filled})
         if path == "/api/invoices":
             row["status"] = "open"
+            if self.api_tax_note:
+                # the app's own note on a sales document (2.32.0: a missing
+                # or expired exemption certificate)
+                row["tax_note"] = self.api_tax_note
         if key:
             self.keys[(path, key)] = (digest, 201, row)
         return 201, row

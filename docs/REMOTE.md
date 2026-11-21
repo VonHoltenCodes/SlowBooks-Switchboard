@@ -95,7 +95,7 @@ A new connector secret was made. It is shown this once and kept in /home/you/.co
     sbc_...
 
 In Claude's Add custom connector form, under Request headers, add the header authorization with the value: Bearer sbc_... (only for a Claude account that has that section; OAuth sign-in, below, needs no secret)
-SlowBooks Pro answered at http://127.0.0.1:3001: the company is Larkspur Test Fencing (SlowBooks Pro 2.31.8), and the token works as a bookkeeper (the daily books but not settings or payroll).
+SlowBooks Pro answered at http://127.0.0.1:3001: the company is Larkspur Test Fencing (SlowBooks Pro 2.32.0), and the token works as a bookkeeper (the daily books but not settings or payroll).
 OAuth sign-in is on. In Claude, add the connector with the address https://books.example.com/mcp and Authentication left to OAuth: Claude opens a SlowBooks Pro sign-in page, where an administrator of these books signs in once.
 Claude can do through it whatever the API token's role allows. Leave this running while Claude should reach the books; press Ctrl+C to close the door.
 ```
@@ -237,7 +237,7 @@ In Claude (on the web, at claude.ai):
    administrator chose the API token Claude works with, so an administrator
    lets Claude in.
 5. You are back in Claude, and the connector shows **Connected**; its page
-   lists the 21 tools. Claude keeps itself signed in (a token for an hour,
+   lists the 23 tools. Claude keeps itself signed in (a token for an hour,
    renewed by itself for thirty days of use); you sign in again only if it
    goes unused that long, or after the sign-ins are cleared (below).
 6. In a chat, turn it on under **+**, **Connectors**, and ask "What company
