@@ -258,7 +258,7 @@ def cmd_serve(args) -> int:
 
 
 def cmd_serve_http(args) -> int:
-    from sbplive.server import run_http
+    from sbplive.serve_http import run_http
 
     return run_http(
         args.host,

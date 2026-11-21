@@ -4,17 +4,16 @@
 # transport is a plain callable, which is how the tests run the tools
 # against the app in-process.
 #
-# What the program refuses on its own ("match the software", the owner's
-# answer on admin operations): nothing the API decides for the token's role.
+# What the program refuses on its own: nothing the API decides for the
+# token's role. The rule is to match the software.
 # Tokens, users, backups, the company file and system go to the API like
 # everything else, and its answer is what the person hears. One thing stays
 # refused here: paths outside /api/ (and /openapi.json). The pages, /health
 # and the payment and portal pages are not the API.
 #
-# Making a backup (POST /api/backups) is the API's to decide like the rest
-# (the owner, 2026-11-06): the app lets a token an administrator ticked
-# "Can make backups" make one whatever its role, and this program does not
-# second-guess that.
+# Making a backup (POST /api/backups) is the API's to decide like the rest:
+# the app lets a token an administrator ticked "Can make backups" make one
+# whatever its role, and this program does not second-guess that.
 #
 # The files the API returns (PDFs, CSV and IIF downloads, print pages) and
 # uploads are refused in operations.py, since they cannot be carried here.
@@ -98,14 +97,18 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def tls_context() -> ssl.SSLContext:
+    """The platform's trusted certificates, hostname checked, TLS 1.2 at the
+    least; there is deliberately no setting that loosens any of it."""
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 def _opener(base_url: str):
     handlers = [_NoRedirect()]
     if base_url.startswith("https://"):
-        # The platform's trusted certificates, hostname checked; there is
-        # deliberately no setting that turns verification off.
-        handlers.append(
-            urllib.request.HTTPSHandler(context=ssl.create_default_context())
-        )
+        handlers.append(urllib.request.HTTPSHandler(context=tls_context()))
     return urllib.request.build_opener(*handlers)
 
 
@@ -201,7 +204,7 @@ class ApiClient:
         body: Any = None,
         headers: dict | None = None,
     ):
-        """Any method: what call_operation sends. refusal() applies."""
+        """Any method: what the general tools send. refusal() applies."""
         return self._request(method.upper(), path, params, body, headers)
 
     def get(self, path: str, params: dict | None = None):

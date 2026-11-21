@@ -1,6 +1,7 @@
-"""The three general tools against the product's own OpenAPI document
-(tests/fixtures/openapi-2.31.8.json): find_operations, describe_operation
-and call_operation, including operations chosen at random (seeded)."""
+"""The general tools against the product's own OpenAPI document
+(tests/fixtures/openapi-2.31.8.json): find_operations, describe_operation,
+api_get and the write tools (post_operation, update_operation,
+delete_operation), including operations chosen at random (seeded)."""
 
 import random
 import re
@@ -12,6 +13,21 @@ from sbplive.client import ApiClient, ApiError, reachable
 from sbplive.server import build_registry
 
 KEY = "pay-2026-0001"
+
+
+def send(client, method, path, params=None, body=None, key=None):
+    """One call through the tool that sends this method."""
+    m = method.lower()
+    if m == "get":
+        assert body is None and key is None
+        return operations.api_get(client, path, params)
+    if m == "post":
+        return operations.post_operation(client, path, params, body, key)
+    if m in ("put", "patch"):
+        assert key is None
+        return operations.update_operation(client, path, params, body, m)
+    assert body is None and key is None
+    return operations.delete_operation(client, path, params)
 
 
 class Spy:
@@ -164,19 +180,14 @@ def test_describe_refusals(client):
 
 
 # ---------------------------------------------------------------------------
-# call_operation
+# api_get and the write tools
 # ---------------------------------------------------------------------------
 
 
-def test_call_a_get_with_path_and_query(client, spy):
-    operations.call_operation(
-        client,
-        "GET",
-        "/api/customers/{customer_id}",
-        {"customer_id": 5},
-    )
-    operations.call_operation(
-        client, "GET", "/api/customers", {"active_only": True, "search": "Zephyr"}
+def test_a_get_with_path_and_query(client, spy):
+    operations.api_get(client, "/api/customers/{customer_id}", {"customer_id": 5})
+    operations.api_get(
+        client, "/api/customers", {"active_only": True, "search": "Zephyr"}
     )
     assert spy.sent[0]["path"] == "/api/customers/5"
     assert spy.sent[1]["params"] == {"active_only": "true", "search": "Zephyr"}
@@ -184,34 +195,36 @@ def test_call_a_get_with_path_and_query(client, spy):
 
 
 def test_call_a_concrete_path(client, spy):
-    operations.call_operation(client, "get", "/api/invoices/12")
+    operations.api_get(client, "/api/invoices/12")
     assert spy.sent[0]["method"] == "GET" and spy.sent[0]["path"] == "/api/invoices/12"
 
 
 def test_path_values_are_quoted(client, spy):
-    operations.call_operation(
-        client, "GET", "/api/customers/{customer_id}", {"customer_id": "1/../tokens"}
+    operations.api_get(
+        client, "/api/customers/{customer_id}", {"customer_id": "1/../tokens"}
     )
     assert spy.sent[0]["path"] == "/api/customers/1%2F..%2Ftokens"
 
 
 def test_call_refusals_before_anything_is_sent(client, spy):
     with pytest.raises(ValueError, match="has no parameter colour"):
-        operations.call_operation(client, "GET", "/api/customers", {"colour": 1})
+        operations.api_get(client, "/api/customers", {"colour": 1})
     with pytest.raises(ValueError, match="needs customer_id"):
-        operations.call_operation(client, "GET", "/api/customers/{customer_id}")
+        operations.api_get(client, "/api/customers/{customer_id}")
     with pytest.raises(ValueError, match="takes no request body"):
-        operations.call_operation(client, "GET", "/api/customers", body={"a": 1})
+        operations.post_operation(
+            client, "/api/invoices/{invoice_id}/void", {"invoice_id": 1}, {"a": 1}
+        )
     with pytest.raises(ValueError, match="idempotency_key must be"):
-        operations.call_operation(client, "POST", "/api/payments", body={})
+        operations.post_operation(client, "/api/payments", body={})
     with pytest.raises(ValueError, match="idempotency_key must be"):
-        operations.call_operation(
-            client, "POST", "/api/payments", body={}, idempotency_key="has space"
+        operations.post_operation(
+            client, "/api/payments", body={}, idempotency_key="has space"
         )
     with pytest.raises(ValueError, match="must be text, a number"):
-        operations.call_operation(client, "GET", "/api/customers", {"search": {}})
+        operations.api_get(client, "/api/customers", {"search": {}})
     with pytest.raises(ValueError, match="takes a file upload"):
-        operations.call_operation(client, "POST", "/api/iif/import")
+        operations.post_operation(client, "/api/iif/import")
     assert spy.sent == []
 
 
@@ -226,32 +239,30 @@ def test_admin_routes_go_to_the_api(client, spy):
         ("GET", "/api/system"),
     ):
         body = {"filename": "x.sql"} if method == "POST" else None
-        operations.call_operation(client, method, path, body=body)
+        send(client, method, path, body=body)
         assert spy.sent[-1]["path"] == path
 
 
 def test_a_file_is_not_returned(client, spy):
     with pytest.raises(ValueError, match="returns a PDF") as exc:
-        operations.call_operation(client, "GET", "/api/reports/profit-loss/pdf")
+        operations.api_get(client, "/api/reports/profit-loss/pdf")
     assert "JSON from GET /api/reports/profit-loss" in str(exc.value)
     with pytest.raises(ValueError, match="returns a print page"):
-        operations.call_operation(client, "GET", "/api/reports/profit-loss/print")
+        operations.api_get(client, "/api/reports/profit-loss/print")
     assert spy.sent == []
 
 
 def test_a_payment_carries_its_key(client, spy):
     body = {"customer_id": 1, "date": "2026-09-12", "amount": "40.00"}
-    operations.call_operation(
-        client, "POST", "/api/payments", body=body, idempotency_key=KEY
-    )
+    operations.post_operation(client, "/api/payments", body=body, idempotency_key=KEY)
     sent = spy.sent[0]
     assert sent["method"] == "POST" and sent["body"] == body
     assert sent["headers"] == {"Idempotency-Key": KEY}
 
 
 def test_put_patch_and_delete(client, spy):
-    operations.call_operation(
-        client, "PUT", "/api/customers/{customer_id}", {"customer_id": 3}, {"name": "B"}
+    operations.update_operation(
+        client, "/api/customers/{customer_id}", {"customer_id": 3}, {"name": "B"}
     )
     deletes = [
         p
@@ -260,15 +271,61 @@ def test_put_patch_and_delete(client, spy):
     ]
     target = deletes[0]
     name = re.findall(r"\{([^}]+)\}", target)
-    operations.call_operation(client, "DELETE", target, {n: 9 for n in name})
-    assert [s["method"] for s in spy.sent] == ["PUT", "DELETE"]
+    operations.delete_operation(client, target, {n: 9 for n in name})
+    operations.update_operation(
+        client, "/api/payment-terms/{term_id}", {"term_id": 2}, method="PATCH"
+    )
+    assert [s["method"] for s in spy.sent] == ["PUT", "DELETE", "PATCH"]
     assert spy.sent[0]["body"] == {"name": "B"}
+    assert spy.sent[2]["body"] is None
+
+
+def test_reads_and_writes_are_separate_tools(client, spy):
+    """Each tool sends its own methods; the wrong one names the right tool."""
+    with pytest.raises(ValueError, match="A GET is a read: use api_get"):
+        operations.update_operation(client, "/api/customers/3", method="GET")
+    with pytest.raises(ValueError, match="does not send POST; use post_operation"):
+        operations.update_operation(client, "/api/customers", method="POST")
+    with pytest.raises(ValueError, match="use delete_operation"):
+        operations.update_operation(client, "/api/customers/3", method="DELETE")
+    with pytest.raises(ValueError, match=r"takes GET \(api_get\)"):
+        operations.post_operation(client, "/api/customers/3")
+    with pytest.raises(ValueError, match=r"takes GET \(api_get\)"):
+        operations.delete_operation(client, "/api/accounts")
+    with pytest.raises(ValueError, match=r"POST \(post_operation\)"):
+        operations.update_operation(client, "/api/invoices/12/void")
+    with pytest.raises(ValueError, match="takes both PUT"):
+        operations.update_operation(client, "/api/payment-terms/2", body={})
+    with pytest.raises(ValueError, match=r"takes POST \(post_operation\)"):
+        operations.api_get(client, "/api/iif/import")
+    assert spy.sent == []
+
+
+def test_described_operations_name_their_tool(client):
+    for method, path, tool in (
+        ("GET", "/api/customers", "api_get"),
+        ("POST", "/api/customers", "post_operation"),
+        ("PUT", "/api/customers/{customer_id}", "update_operation"),
+        ("PATCH", "/api/payment-terms/{term_id}", "update_operation"),
+    ):
+        how = operations.describe_operation(client, method, path)["how_to_call"]
+        assert how.startswith(tool), how
+    assert (
+        "method PATCH"
+        in operations.describe_operation(
+            client, "PATCH", "/api/payment-terms/{term_id}"
+        )["how_to_call"]
+    )
+    rows = operations.find_operations(client, "customer")
+    assert {r["tool"] for r in rows if "tool" in r} >= {"api_get", "post_operation"}
 
 
 def test_the_apis_refusal_comes_back(client, spy):
     spy.answer = (403, {"detail": "A read-only token cannot change the books."})
     with pytest.raises(ApiError) as exc:
-        operations.call_operation(client, "POST", "/api/customers", body={"name": "A"})
+        operations.post_operation(
+            client, "/api/customers", body={"name": "A"}, asked_user=True
+        )
     assert exc.value.status == 403
     assert exc.value.detail == "A read-only token cannot change the books."
 
@@ -276,23 +333,21 @@ def test_the_apis_refusal_comes_back(client, spy):
 def test_lost_answers_say_what_to_do(client, spy):
     spy.answer = ApiError(0, "SlowBooks Pro did not answer at http://127.0.0.1:1")
     with pytest.raises(ValueError, match="same key and the same data"):
-        operations.call_operation(
-            client, "POST", "/api/payments", body={}, idempotency_key=KEY
-        )
+        operations.post_operation(client, "/api/payments", body={}, idempotency_key=KEY)
     with pytest.raises(ValueError, match="before retrying"):
-        operations.call_operation(client, "POST", "/api/customers", body={})
+        operations.post_operation(client, "/api/customers", body={})
 
 
-def test_call_operation_through_the_registry_against_the_fake(api, books):
+def test_post_operation_through_the_registry_against_the_fake(api, books):
     reg = build_registry(api)
     out = reg.call(
-        "call_operation",
-        {"method": "POST", "path": "/api/customers", "body": {"name": "Quill Co"}},
+        "post_operation",
+        {"path": "/api/customers", "body": {"name": "Quill Co"}, "asked_user": True},
     )
     assert out["isError"] is False
     out = reg.call(
-        "call_operation",
-        {"method": "POST", "path": "/api/customers", "body": {"nam": "Typo Co"}},
+        "post_operation",
+        {"path": "/api/customers", "body": {"nam": "Typo Co"}},
     )
     assert out["isError"] is True
     assert "nam: Extra inputs are not permitted" in out["content"][0]["text"]
@@ -388,15 +443,15 @@ def test_random_operations_build_correct_requests(spec, seed):
 
         if content and "application/json" not in content:
             with pytest.raises(ValueError, match="takes a file upload"):
-                operations.call_operation(client, method, template, params, body, key)
+                send(client, method, template, params, body, key)
             assert spy.sent == []
             continue
         if kind:
             with pytest.raises(ValueError, match="for a person to open"):
-                operations.call_operation(client, method, template, params, body, key)
+                send(client, method, template, params, body, key)
             assert spy.sent == []
             continue
-        operations.call_operation(client, method, template, params, body, key)
+        send(client, method, template, params, body, key)
         assert len(spy.sent) == 1, (method, template)
         sent = spy.sent[0]
         assert sent["method"] == method.upper()

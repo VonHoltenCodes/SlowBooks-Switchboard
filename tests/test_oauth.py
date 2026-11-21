@@ -210,6 +210,42 @@ def test_the_connector_secret_still_works(door):
 # -- the whole walk ---------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "name, shown",
+    [
+        ("Claude", "Claude"),
+        ("Grok", "Grok"),
+        ("  Claude   Code ", "Claude Code"),
+        ("", "your assistant"),
+        (None, "your assistant"),
+        ("x" * 41, "your assistant"),
+        ("<b>Bank</b>", "your assistant"),
+        ("Pay me at https://example.test", "your assistant"),
+        ("Line\nbreak", "Line break"),
+    ],
+)
+def test_the_assistant_is_named_when_its_name_is_plain(name, shown):
+    assert oauth.assistant_name(name) == shown
+
+
+@pytest.mark.parametrize(
+    "name, line",
+    [
+        ("Grok", "Let Grok work the books of"),
+        ("<img src=x>", "Let your assistant work the books of"),
+    ],
+)
+def test_the_consent_line_names_the_asking_app(door, owner_only, name, line):
+    status, reg = register(door.base, [CLAUDE_CALLBACK], name=name)
+    assert status == 201
+    _, challenge = pkce()
+    params = auth_params(reg["client_id"], CLAUDE_CALLBACK, challenge, door.resource)
+    status, _, page = authorize(door.base, params)
+    assert status == 200 and line in page
+    assert "<img" not in page  # the name is only ever text
+    assert "Claude" not in page.split("<form")[0]
+
+
 def test_the_full_flow_with_dcr(door, owner_only):
     status, reg = register(door.base, [CLAUDE_CALLBACK], name="Claude")
     assert status == 201
@@ -272,7 +308,7 @@ def test_the_full_flow_with_dcr(door, owner_only):
     sid = headers["mcp-session-id"]
     listed = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
     status, _, reply = door.mcp(listed, access, {"Mcp-Session-Id": sid})
-    assert status == 200 and len(reply["result"]["tools"]) == 21
+    assert status == 200 and len(reply["result"]["tools"]) == 23
     status, _, _ = door.mcp(listed, SECRET_FAKE, {"Mcp-Session-Id": sid})
     assert status == 404  # another sign-in cannot use this session
 
@@ -646,6 +682,32 @@ def test_a_non_administrator_is_refused(books, fake_server):
         running.close()
 
 
+def test_firefox_s_null_origin_is_this_site_only_when_the_browser_says_so(door):
+    """Firefox posts a form from a no-referrer page with "Origin: null"; its
+    Sec-Fetch-Site says the form came from this site. A null Origin with no
+    such word, or with another site's, is still refused."""
+    from urllib.parse import urlencode
+
+    from oauthflow import call
+
+    _, reg = register(door.base, [CLAUDE_CALLBACK])
+    _, challenge = pkce()
+    params = auth_params(reg["client_id"], CLAUDE_CALLBACK, challenge, door.resource)
+
+    def post(headers):
+        _, _, page = authorize(door.base, params)
+        form = {"password": OWNER_PW, "pending": pending_of(page), "action": "approve"}
+        head = dict(headers, **{"Content-Type": "application/x-www-form-urlencoded"})
+        return call(
+            door.base, "POST", "/oauth/authorize", urlencode(form).encode(), head
+        )[0]
+
+    assert post({"Origin": "null"}) == 403
+    assert post({"Origin": "null", "Sec-Fetch-Site": "cross-site"}) == 403
+    assert post({"Origin": "null", "Sec-Fetch-Site": "same-site"}) == 403
+    assert post({"Origin": "null", "Sec-Fetch-Site": "same-origin"}) == 303
+
+
 def test_deny_replay_and_another_site(door):
     _, reg = register(door.base, [CLAUDE_CALLBACK])
     _, challenge = pkce()
@@ -826,3 +888,19 @@ def test_the_log_mask_covers_oauth_tokens():
     )
     logs._MaskSecrets().filter(record)
     assert "sbo_at_" not in record.getMessage()
+
+
+def test_the_sign_in_page_s_notice_is_a_door_s_own_and_off_by_default():
+    store = oauth.MemoryStore(Clock())
+    plain = oauth.OAuthServer("http://127.0.0.1:1", store, lambda f: None)
+    assert plain._notice_html() == ""
+    noted = oauth.OAuthServer(
+        "http://127.0.0.1:1", store, lambda f: None,
+        notice="Use it <at your> own risk.",
+        notice_links=[("Terms", "https://e.test/t?a=1&b=2"), ("Bad", "http://e.test")],
+    )  # fmt: skip
+    got = noted._notice_html()
+    assert got == (
+        "<p class=note>Use it &lt;at your&gt; own risk. "
+        '<a href="https://e.test/t?a=1&amp;b=2" rel="noopener noreferrer">Terms</a></p>'
+    )

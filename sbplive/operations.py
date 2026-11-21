@@ -1,10 +1,16 @@
 # ============================================================================
-# The three general tools: every operation in the app's own /openapi.json is
+# The general tools: every operation in the app's own /openapi.json is
 # reachable through them, so they are never out of date with the installed
 # version. The document is read once per process through the client (cached
 # on it, as tools.py's _spec does).
 #
-# call_operation refuses nothing the API would decide: the token's role, the
+# Reads and writes are separate tools, as the connector directory's review
+# asks (a tool that takes both safe and unsafe methods is rejected): api_get
+# sends GET only, post_operation POST, update_operation PUT or PATCH and
+# delete_operation DELETE. find_operations and describe_operation only read
+# the document.
+#
+# The write tools refuse nothing the API would decide: the token's role, the
 # closing date and validation are the API's, admin areas included (tokens,
 # users, backups, the company file, system), and the API's answer is what
 # the person hears. It refuses only what it cannot send (an unknown
@@ -26,8 +32,16 @@ from sbplive.client import (
 )
 
 METHODS = ("get", "post", "put", "patch", "delete")
+# The tool that sends each method.
+TOOL_FOR = {
+    "get": "api_get",
+    "post": "post_operation",
+    "put": "update_operation",
+    "patch": "update_operation",
+    "delete": "delete_operation",
+}
 
-# The routes that honour an Idempotency-Key header (the product's
+# The routes that honor an Idempotency-Key header (the product's
 # request_keys service). The OpenAPI document does not declare the header, so
 # it is named here; a route whose document does name it is keyed too.
 KEYED = {
@@ -159,10 +173,7 @@ def lookup(client: ApiClient, method, path) -> tuple:
     if path in paths:
         op = paths[path].get(m)
         if not isinstance(op, dict):
-            have = [x.upper() for x in METHODS if isinstance(paths[path].get(x), dict)]
-            raise ValueError(
-                f"{path} does not take {m.upper()}; it takes {', '.join(have)}."
-            )
+            raise ValueError(_wrong_method(m, path, methods_at(client, path)))
         return m, path, op, {}
     # A concrete path such as /api/invoices/12: match it to its template,
     # preferring the template with the fewest placeholders.
@@ -178,12 +189,34 @@ def lookup(client: ApiClient, method, path) -> tuple:
         names = re.findall(r"\{([^}]+)\}", template)
         values = dict(zip(names, found.groups()))
         return m, template, paths[template][m], values
+    others = methods_at(client, path)
+    if others:
+        raise ValueError(_wrong_method(m, path, others))
     close = difflib.get_close_matches(path, list(paths), n=3, cutoff=0.6)
     hint = f" Closest: {', '.join(close)}." if close else ""
     raise ValueError(
         f"SlowBooks Pro has no {m.upper()} {path}.{hint} "
         "Use find_operations to look it up."
     )
+
+
+def methods_at(client: ApiClient, path: str) -> list:
+    """The methods a path (a template or a concrete path) takes, in order."""
+    paths = _spec(client).get("paths", {})
+    items = [paths[path]] if path in paths else []
+    if not items:
+        items = [
+            item
+            for template, item in paths.items()
+            if "{" in template and _template_regex(template).match(path)
+        ]
+    return [m for m in METHODS if any(isinstance(i.get(m), dict) for i in items)]
+
+
+def _wrong_method(m: str, path: str, have: list) -> str:
+    """The sentence for a method the path does not take, naming the tools."""
+    ways = ", ".join(f"{x.upper()} ({TOOL_FOR[x]})" for x in have)
+    return f"{path} does not take {m.upper()}; it takes {ways}."
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +269,12 @@ def find_operations(client: ApiClient, query: str, limit: int = 20):
     scored.sort(key=lambda r: (r[0], r[1]), reverse=True)
     out = []
     for _, _, method, path, op in scored[:limit]:
-        row = {"method": method.upper(), "path": path, "does": _summary(op)}
+        row = {
+            "method": method.upper(),
+            "path": path,
+            "does": _summary(op),
+            "tool": TOOL_FOR[method],
+        }
         kind = file_kind(method, path, op)
         if kind:
             row["note"] = f"returns {kind} for a person to open, not data"
@@ -335,7 +373,7 @@ def describe_operation(client: ApiClient, method: str, path: str) -> dict:
         if "application/json" not in content and content:
             out["request_body"]["note"] = (
                 f"This operation takes {', '.join(content)}, which "
-                "call_operation cannot send; do it in SlowBooks Pro."
+                "cannot be sent from here; do it in SlowBooks Pro."
             )
     schemas = _spec(client).get("components", {}).get("schemas", {})
     resolved: dict = {}
@@ -355,24 +393,50 @@ def describe_operation(client: ApiClient, method: str, path: str) -> dict:
     kind = file_kind(m, template, op)
     if kind:
         out["returns"] = (
-            f"{kind}, which call_operation does not return: the person opens "
-            "it in SlowBooks Pro."
+            f"{kind}, which is not returned here: the person opens it in "
+            "SlowBooks Pro."
         )
     out["idempotency_key"] = (
         "required: pass a stable idempotency_key so a retry books it once"
         if is_keyed(m, template, op)
         else "not taken by this operation"
     )
-    out["how_to_call"] = (
-        "call_operation with this method and path; put path and query "
-        "parameters in params by name, and the request body in body."
-    )
+    out["how_to_call"] = _how_to_call(client, m, template)
     return out
 
 
+def _how_to_call(client: ApiClient, m: str, template: str) -> str:
+    how = f"{TOOL_FOR[m]} with this path"
+    if m in ("put", "patch") and {"put", "patch"} <= set(methods_at(client, template)):
+        how += f" and method {m.upper()}"
+    how += "; put path and query parameters in params by name"
+    if m in ("get", "delete"):
+        return how + "."
+    return how + ", and the request body in body."
+
+
 # ---------------------------------------------------------------------------
-# call_operation
+# api_get and the write tools
 # ---------------------------------------------------------------------------
+
+
+def _refuse_files(client: ApiClient, m: str, template: str, op: dict) -> None:
+    """A route whose answer is a PDF, a file or a print page is not sent."""
+    kind = file_kind(m, template, op)
+    if not kind:
+        return
+    parent = template.rstrip("/").rsplit("/", 1)[0]
+    paths = _spec(client).get("paths", {})
+    hint = (
+        f" The same data comes as JSON from GET {parent}."
+        if isinstance(paths.get(parent, {}).get("get"), dict)
+        and not file_kind("get", parent, paths[parent]["get"])
+        else ""
+    )
+    raise ValueError(
+        f"{m.upper()} {template} returns {kind} for a person to open, which "
+        f"is not returned here; they can open it in SlowBooks Pro.{hint}"
+    )
 
 
 def _query_value(name: str, value):
@@ -398,22 +462,9 @@ def build_request(
     body=None,
     idempotency_key: str | None = None,
 ) -> dict:
-    """The request call_operation would send, as a dict; nothing is sent."""
+    """The request a write tool would send, as a dict; nothing is sent."""
     m, template, op, from_path = lookup(client, method, path)
-    kind = file_kind(m, template, op)
-    if kind:
-        parent = template.rstrip("/").rsplit("/", 1)[0]
-        paths = _spec(client).get("paths", {})
-        hint = (
-            f" The same data comes as JSON from GET {parent}."
-            if isinstance(paths.get(parent, {}).get("get"), dict)
-            and not file_kind("get", parent, paths[parent]["get"])
-            else ""
-        )
-        raise ValueError(
-            f"{m.upper()} {template} returns {kind} for a person to open, which "
-            f"is not returned here; they can open it in SlowBooks Pro.{hint}"
-        )
+    _refuse_files(client, m, template, op)
     kept = refusal(m, template)
     if kept:
         raise ValueError(kept)
@@ -489,18 +540,9 @@ def build_request(
     }
 
 
-def call_operation(
-    client: ApiClient,
-    method: str,
-    path: str,
-    params: dict | None = None,
-    body=None,
-    idempotency_key: str | None = None,
-):
-    """Make one API call, as the token, and return the API's answer."""
+def _send(client: ApiClient, method, path, params, body, idempotency_key):
+    """Send one write as the token and return the API's answer."""
     req = build_request(client, method, path, params, body, idempotency_key)
-    if req["method"] == "GET":
-        return client.request("GET", req["path"], req["params"], None, req["headers"])
     headers = dict(req["headers"])
     key = headers.pop("Idempotency-Key", None)
     return tools._write(
@@ -512,3 +554,129 @@ def call_operation(
         method=req["method"],
         headers=headers or None,
     )
+
+
+def _not_here(tool: str, method: str, path) -> str:
+    """The sentence for a method this write tool does not send."""
+    other = TOOL_FOR[method]
+    if method == "get":
+        return (
+            f"{tool} only changes the books. A GET is a read: use api_get with "
+            f"the same path ({path}) and params."
+        )
+    return f"{tool} does not send {method.upper()}; use {other}."
+
+
+def api_get(client: ApiClient, path: str, params: dict | None = None):
+    """GET one API route and return the API's answer. Nothing is changed.
+
+    A route the document lists is checked as the write tools check theirs
+    (its parameters, path values filled in, no file answers); any other path
+    goes to the API, or the client's refusal, as it is. A listed route that
+    takes no GET is refused with the tool that sends what it takes."""
+    try:
+        lookup(client, "get", path)
+    except ValueError:
+        if isinstance(path, str) and reachable(path) and methods_at(client, path):
+            raise  # a route that takes other methods: say which tool sends them
+        return client.get(path, params)
+    req = build_request(client, "get", path, params)
+    return client.request("GET", req["path"], req["params"], None, req["headers"])
+
+
+def post_operation(
+    client: ApiClient,
+    path: str,
+    params: dict | None = None,
+    body=None,
+    idempotency_key: str | None = None,
+    asked_user: bool = False,
+):
+    """POST to one API operation: create a record or run an action. A create
+    of one of the main records asks first when it is bare (tools.ASK_FIRST)."""
+    template = None
+    if isinstance(path, str) and path.startswith("/"):
+        try:
+            template = lookup(client, "post", path)[1]
+        except ValueError:
+            template = None  # _send says what is wrong
+    if template in tools.MONEY_ROUTES:
+        answer = _send(client, "post", path, params, body, idempotency_key)
+        return tools.money_went(client, template, answer)
+    if template in tools.ASK_FIRST or template in tools.SALES_TAX_ROUTES:
+        held = tools.paid_from_hold(client, template, body, "post_operation")
+        if held is not None:
+            build_request(client, "post", path, params, body, idempotency_key)
+            return held
+        tax = tools.sales_tax(client, template, body)
+        if template in tools.ASK_FIRST:
+            held = tools.ask_first(
+                template,
+                body,
+                asked_user,
+                "post_operation",
+                None if asked_user else tools.body_fields(client, template),
+                tax,
+            )
+        if held is not None:
+            build_request(client, "post", path, params, body, idempotency_key)
+            return held
+        fallbacks = tools.item_fallbacks(client, template, body)
+        sent = tools.with_tax_rate(body, tax)
+        answer = _send(client, "post", path, params, sent, idempotency_key)
+        return tools.with_left_blank(template, body, answer, tax, fallbacks)
+    return _send(client, "post", path, params, body, idempotency_key)
+
+
+def update_operation(
+    client: ApiClient,
+    path: str,
+    params: dict | None = None,
+    body=None,
+    method: str | None = None,
+):
+    """PUT or PATCH one API operation: change a record."""
+    if method is not None:
+        m = _norm_method(method)
+        if m not in ("put", "patch"):
+            raise ValueError(_not_here("update_operation", m, path))
+    else:
+        if not isinstance(path, str) or not path.startswith("/"):
+            m = "put"  # lookup says what a path must look like
+        else:
+            takes = [x for x in methods_at(client, path) if x in ("put", "patch")]
+            if len(takes) > 1:
+                raise ValueError(
+                    f"{path} takes both PUT (the whole record) and PATCH (some "
+                    "fields): pass method."
+                )
+            m = takes[0] if takes else "put"
+    return _send(client, m, path, params, body, None)
+
+
+def delete_operation(client: ApiClient, path: str, params: dict | None = None):
+    """DELETE through one API operation: remove a record, or, where
+    SlowBooks Pro keeps history (customers, vendors, items), make it
+    inactive. The answer's result says which, from the app's own answer."""
+    answer = _send(client, "delete", path, params, None, None)
+    outcome = delete_outcome(answer)
+    if outcome is None:
+        return answer
+    return {**answer, "result": outcome}
+
+
+def delete_outcome(answer):
+    """ "deactivated" or "deleted" as the app's answer says it, else None
+    (the answer is passed on as it is)."""
+    if not isinstance(answer, dict):
+        return None
+    if answer.get("deleted") is True:
+        return "deleted"
+    words = " ".join(
+        str(answer.get(k)) for k in ("message", "status") if answer.get(k)
+    ).lower()
+    if "deactivat" in words or "inactive" in words:
+        return "deactivated"
+    if "delete" in words or "removed" in words:
+        return "deleted"
+    return None

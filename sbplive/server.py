@@ -1,9 +1,9 @@
 # ============================================================================
 # The server: every tool registered with its description, input schema and
-# annotations, over one ApiClient, and the two entry points: run() for the
-# stdio door and run_http() for the remote door (remote.py). Both serve the
-# same registry through the same protocol.Session, and serve_mcp() is the one
-# answer every HTTP-shaped door gives an MCP message.
+# annotations, over one ApiClient, the stdio door's entry point run(), and
+# serve_mcp(), the one answer every HTTP-shaped door gives an MCP message.
+# The self-hosted HTTP door's runner (serve-http) is serve_http.py; both
+# doors serve the same registry through the same protocol.Session.
 # Standard library only. A refusal from the API reaches the model as the
 # API's own sentence, in a tool result marked as an error.
 # ============================================================================
@@ -11,7 +11,7 @@
 import logging
 import sys
 
-from sbplive import logs, operations, store, tools
+from sbplive import logs, operations, tools
 from sbplive.client import ApiClient, urllib_transport
 from sbplive.config import ConfigError, load_config
 from sbplive.protocol import (
@@ -19,11 +19,14 @@ from sbplive.protocol import (
     META_VERSION,
     MODERN_VERSIONS,
     Session,
+    icons_at,
+    make_server_info,
     serve_stdio,
 )
 from sbplive.registry import (
     DESTRUCTIVE,
     KEYED_WRITE,
+    ONCE_WRITE,
     READ_ONLY,
     WRITE,
     Registry,
@@ -35,13 +38,36 @@ log = logging.getLogger("sbplive")
 INSTRUCTIONS = (
     "Tools for working the books of a running SlowBooks Pro company through "
     "its own API. Call `context` first. The named tools cover everyday work; "
-    "for anything else, `find_operations` finds the API operation, "
-    "`describe_operation` says what it takes and `call_operation` makes the "
-    "call. Amounts are decimal dollars as the API returns them; dates are ISO "
+    "for anything else, `find_operations` finds the API operation and "
+    "`describe_operation` says what it takes; `api_get` reads, and "
+    "`post_operation`, `update_operation` and `delete_operation` make "
+    "changes. Amounts are decimal dollars as the API returns them; dates are ISO "
     "(YYYY-MM-DD). The API enforces the token's role, the closing date and "
     "validation: a refusal is a sentence to pass on to the person, not a "
     "reason to retry. Every write is audited as token:<label>. Use one stable key "
-    "per payment so a retry can never book it twice; void instead of delete."
+    "per payment so a retry can never book it twice; void instead of delete. "
+    "Never invent a value for a record. A create with little on it comes back "
+    "with ask_first and the empty fields: ask the person for them before "
+    "calling again. After a create, tell the person what left_blank lists "
+    "(still empty) and what defaulted lists (not given, so SlowBooks Pro used "
+    "its default: the value is there). A sales document sent without "
+    "tax_rate takes the company's default rate, as the app's form does; pass "
+    "tax_note on."
+)
+
+_ASKS = (
+    " {what} with little on it is not created at first: the answer lists the "
+    "empty fields worth asking the user for (ask_first), and a second call "
+    "with asked_user creates it. A created record's answer lists what is "
+    "still empty in left_blank, and in defaulted what SlowBooks Pro filled "
+    "with its default."
+)
+
+_TAX = (
+    " {what} sent without tax_rate takes the company's Default Tax Rate (a "
+    "credit memo for an invoice, that invoice's rate), as the app's form "
+    "does; the answer's tax_note says so. A tax_rate you give, 0 included, "
+    "is used as given."
 )
 
 _DATA = (
@@ -54,6 +80,12 @@ _KEY = (
     "same key with other data is refused."
 )
 _KIND = "One of: " + ", ".join(tools.KINDS) + "."
+_API = tools.API_REFERENCE
+_WRITE_PATH = (
+    "The path from find_operations, such as /api/invoices/{invoice_id}; a "
+    "concrete path also works."
+)
+_PARAMS = "Path and query parameters by name, such as {'invoice_id': 12}."
 
 
 def _tool(tool_name, title, fn, annotations, description, /, **params) -> Tool:
@@ -151,8 +183,8 @@ def build_registry(client: ApiClient) -> Registry:
             "Route schema",
             tools.api_schema,
             READ_ONLY,
-            "How to call one API route: its methods, parameters and request "
-            "body. A prefix lists the routes under it.",
+            "How to call one route of " + _API + ": its methods, parameters "
+            "and request body. A prefix lists the routes under it.",
             path="A route such as /api/invoices, or a prefix such as /api/inv.",
         )
     )
@@ -160,12 +192,16 @@ def build_registry(client: ApiClient) -> Registry:
         _tool(
             "api_get",
             "Read any route",
-            tools.api_get,
+            operations.api_get,
             READ_ONLY,
-            "A read-only GET of any API route not covered by another tool "
-            "(see api_schema or find_operations).",
-            path="The concrete route, such as /api/accounts or /api/invoices/12.",
-            params="Query parameters by name.",
+            "A read-only GET of any route of " + _API + " not covered by "
+            "another tool (see api_schema or find_operations). It sends GET "
+            "only; changes go through post_operation, update_operation and "
+            "delete_operation.",
+            path="The route, such as /api/accounts or /api/invoices/12; a "
+            "template such as /api/invoices/{invoice_id} takes its value in "
+            "params.",
+            params="Query parameters (and a template's path values) by name.",
         )
     )
 
@@ -176,10 +212,10 @@ def build_registry(client: ApiClient) -> Registry:
             "Find API operations",
             operations.find_operations,
             READ_ONLY,
-            "Search the installed app's API (its OpenAPI document) for "
-            "operations whose path, summary or tags match the words, with a "
-            "line on what each does. Use it for anything the named tools do not "
-            "cover, then describe_operation and call_operation.",
+            "Search " + _API + ", as the installed app's OpenAPI document "
+            "describes it, for operations whose path, summary or tags match "
+            "the words, with a line on what each does and the tool that sends "
+            "it. For anything the named tools do not cover.",
             query="Words such as 'credit memo', 'deposit', 'class' or 'budget'.",
             limit="The most operations to return, up to 50.",
         )
@@ -190,56 +226,105 @@ def build_registry(client: ApiClient) -> Registry:
             "Describe an API operation",
             operations.describe_operation,
             READ_ONLY,
-            "One operation's parameters and request body, with the schemas it "
-            "refers to resolved, and whether it needs an idempotency key. Read "
-            "it before call_operation.",
+            "One operation of " + _API + ": its parameters and request body, "
+            "with the schemas it refers to resolved, whether it needs an "
+            "idempotency key, and the tool that sends it. Nothing is sent.",
             method="GET, POST, PUT, PATCH or DELETE.",
             path="The path from find_operations, such as "
             "/api/invoices/{invoice_id}; a concrete path also works.",
+        )
+    )
+    # Writes, one tool per kind of change; like every write here they carry
+    # destructiveHint (registry.py says why); reads go through api_get.
+    _REFUSED = (
+        " The API decides what is allowed; a refusal comes back as its " "sentence."
+    )
+    add(
+        _tool(
+            "post_operation",
+            "Create or act through the API",
+            operations.post_operation,
+            DESTRUCTIVE,
+            "POST to one operation of " + _API + ", as the token, and return "
+            "the API's answer: create a record, or run an action such as a "
+            "void, a match or an apply. Path and query parameters go in "
+            "params by name, the record in body. A payment-recording "
+            "operation needs idempotency_key."
+            + _REFUSED
+            + _ASKS.format(
+                what="A new customer, vendor, item, employee, account, invoice, "
+                "bill, expense, estimate or purchase order"
+            )
+            + _TAX.format(what="A new invoice, estimate, sales receipt or credit memo"),
+            path=_WRITE_PATH,
+            params=_PARAMS,
+            body="The request body, when the operation takes one.",
+            idempotency_key="Required where describe_operation says so: " + _KEY,
+            asked_user="For a create of one of the records above: "
+            + tools.ASKED_USER[0].lower()
+            + tools.ASKED_USER[1:],
         )
     )
     add(
         _tool(
-            "call_operation",
-            "Call an API operation",
-            operations.call_operation,
-            # It can make any call the token's role allows, deletes included,
-            # so it carries the strictest hints; reads have their own tools.
+            "update_operation",
+            "Update through the API",
+            operations.update_operation,
             DESTRUCTIVE,
-            "Make any API call the token's role allows, and return the API's "
-            "answer. Path and query parameters go in params by name, the record "
-            "in body. A payment-recording operation needs idempotency_key. The "
-            "API decides what is allowed: pass a refusal on to the person "
-            "rather than retrying.",
-            method="GET, POST, PUT, PATCH or DELETE.",
-            path="The path from find_operations, such as "
-            "/api/invoices/{invoice_id}; a concrete path also works.",
-            params="Path and query parameters by name, such as " "{'invoice_id': 12}.",
-            body="The request body, when the operation takes one.",
-            idempotency_key="Required where describe_operation says so: " + _KEY,
+            "PUT or PATCH one operation of " + _API + ", as the token, and "
+            "return the API's answer: change a record's fields. Path and "
+            "query parameters go in params by name, the fields in body." + _REFUSED,
+            path=_WRITE_PATH,
+            params=_PARAMS,
+            body="The request body: the record's fields.",
+            method="PUT or PATCH. Leave it out unless the route takes both.",
+        )
+    )
+    add(
+        _tool(
+            "delete_operation",
+            "Delete through the API",
+            operations.delete_operation,
+            ONCE_WRITE,
+            "DELETE through one operation of " + _API + ", as the token, and "
+            "return the API's answer: remove a record, or, where SlowBooks Pro "
+            "keeps its history (a customer, vendor or item), make it inactive; "
+            "the answer's result says which (deleted or deactivated). Posted "
+            "documents are voided with post_operation instead; the API answers "
+            "a DELETE on one with the void route." + _REFUSED,
+            path=_WRITE_PATH,
+            params=_PARAMS,
         )
     )
 
     # -- everyday writes -------------------------------------------------------
-    for name, title, fn, what in (
+    for name, title, fn, what, asks in (
         ("create_customer", "Create a customer", tools.create_customer,
-         "Create a customer. Required: name."),
+         "Create a customer. Required: name.", "A customer"),
         ("create_vendor", "Create a vendor", tools.create_vendor,
-         "Create a vendor. Required: name."),
+         "Create a vendor. Required: name.", "A vendor"),
         ("create_item", "Create an item", tools.create_item,
-         "Create an item. Required: name and item_type."),
+         "Create an item. Required: name and item_type.", "An item"),
         ("create_invoice", "Create an invoice", tools.create_invoice,
-         "Create an invoice. Required: customer_id, date and lines."),
+         "Create an invoice. Required: customer_id, date and lines.",
+         "An invoice"),
         ("create_bill", "Enter a bill", tools.create_bill,
-         "Enter a vendor's bill. Required: vendor_id, date and lines."),
+         "Enter a vendor's bill. Required: vendor_id, date and lines.",
+         "A bill"),
         ("create_expense", "Record an expense", tools.create_expense,
          ("Record a paid expense. Required: date, paid_from_account_id, and "
-          "either amount with expense_account_id or lines.")),
+          "either amount with expense_account_id or lines. Without "
+          "paid_from_account_id nothing is sent: the answer suggests the "
+          "account the app's form starts at, to confirm with the user."),
+         "An expense"),
         ("create_journal_entry", "Post a journal entry",
          tools.create_journal_entry,
          ("Post a manual journal entry. Required: date, description and "
-          "lines; debits must equal credits.")),
+          "lines; debits must equal credits."), None),
     ):  # fmt: skip
+        params = {"data": _DATA}
+        if asks:
+            params["asked_user"] = tools.ASKED_USER
         add(
             _tool(
                 name,
@@ -247,8 +332,10 @@ def build_registry(client: ApiClient) -> Registry:
                 fn,
                 WRITE,
                 what + " If the answer is lost, check with search before "
-                "trying again.",
-                data=_DATA,
+                "trying again."
+                + (_ASKS.format(what=asks) if asks else "")
+                + (_TAX.format(what="An invoice") if name == "create_invoice" else ""),
+                **params,
             )
         )
     add(
@@ -258,8 +345,10 @@ def build_registry(client: ApiClient) -> Registry:
             tools.record_payment,
             KEYED_WRITE,
             "Record a customer's payment. Required data: customer_id, date and "
-            "amount; allocations apply it to invoices. A retry with the same "
-            "key and data books it once.",
+            "amount; allocations apply it to invoices. Without "
+            "deposit_to_account_id it waits in Undeposited Funds until a bank "
+            "deposit; the answer's money_note says where the money went: pass "
+            "it on. A retry with the same key and data books it once.",
             data=_DATA,
             key=_KEY,
         )
@@ -271,8 +360,9 @@ def build_registry(client: ApiClient) -> Registry:
             tools.record_bill_payment,
             KEYED_WRITE,
             "Pay a vendor. Required data: vendor_id, date and amount; "
-            "allocations apply it to bills. A retry with the same key and data "
-            "books it once.",
+            "allocations apply it to bills. Without pay_from_account_id it is "
+            "paid from the default bank account; the answer's money_note says "
+            "which. A retry with the same key and data books it once.",
             data=_DATA,
             key=_KEY,
         )
@@ -282,10 +372,10 @@ def build_registry(client: ApiClient) -> Registry:
             "void_record",
             "Void a record",
             tools.void_record,
-            DESTRUCTIVE,
+            ONCE_WRITE,
             "Void an invoice, bill, expense, journal entry, payment or bill "
             "payment with a reversing entry. Nothing is deleted, but the record "
-            "stops counting: confirm with the person first.",
+            "stops counting.",
             kind="One of: " + ", ".join(tools._VOID_PATHS) + ".",
             record_id="The record's id.",
             fee_refunded="Payments only: the provider gave the processing fee " "back.",
@@ -316,13 +406,22 @@ class Mcp:
         self.registry = registry
         self.instructions = instructions
         self.sessions = Sessions() if sessions is None else sessions
+        # serverInfo, its icons as data: URIs until use_origin gives the
+        # door a web address of its own.
+        self.server_info = make_server_info()
         # The modern era needs no state: one Session that never sees
         # initialize answers every stateless request (and, for a request
         # with neither a version nor a session, says how to begin).
         self.stateless = self.session()
 
+    def use_origin(self, origin: str) -> None:
+        """Point serverInfo's icons at the files served at origin's root
+        (a door with a web address of its own that serves them)."""
+        self.server_info = make_server_info(icons_at(origin))
+        self.stateless.server_info = self.server_info
+
     def session(self) -> Session:
-        return Session(self.registry, self.instructions)
+        return Session(self.registry, self.instructions, self.server_info)
 
 
 def serve_mcp(mcp: Mcp, message, headers, owner: str = "secret") -> tuple:
@@ -512,108 +611,3 @@ def run() -> int:
         return serve_stdio(session, sys.stdin.buffer, out)
     except KeyboardInterrupt:
         return 0
-
-
-def _say(text: str = "") -> None:
-    # The remote door's own words go to standard output (the console the
-    # person started it in); its log goes to standard error and the file.
-    print(text, flush=True)
-
-
-def run_http(
-    host: str,
-    port: int,
-    *,
-    new_secret: bool = False,
-    allowed_origins=(),
-    public_url: str | None = None,
-) -> int:
-    """serve-http: the remote door, until Ctrl+C. With public_url, the door
-    also signs Claude in with OAuth (oauth_door.py)."""
-    from sbplive import oauth_door, probe, remote
-
-    logs.setup()
-    try:
-        config = load_config()
-        origins = tuple(remote.check_origin_arg(o) for o in allowed_origins)
-        signin = oauth_door.make(config, public_url)
-        secret, made = remote.ensure_secret(replace=new_secret)
-    except ConfigError as exc:
-        _say(str(exc))
-        return 2
-    client = ApiClient(urllib_transport(config))
-    door = remote.Door(
-        build_registry(client),
-        INSTRUCTIONS,
-        secret,
-        allowed_origins=origins,
-        oauth=signin.server if signin else None,
-    )
-    try:
-        httpd = remote.make_server(door, host, port)
-    except OSError as exc:
-        _say(
-            f"The remote door could not open on {host} port {port}: "
-            f"{exc.strerror or exc}. Is another serve-http already running? "
-            "Choose another port with --port."
-        )
-        return 1
-    bound = httpd.server_address[1]
-    url = remote.endpoint_url(host, bound)
-    _say(f"The remote door is open at {url}")
-    if not remote.is_loopback_host(host):
-        _say(
-            f"It listens on {host}, so other computers that can reach this one "
-            "can knock too: the connector secret is what keeps them out. To "
-            "keep it to this computer (and cloudflared on it), leave --host out."
-        )
-    if made:
-        _say(
-            "A new connector secret was made. It is shown this once and kept in "
-            f"{store.secret_path()}, which only you can read:"
-        )
-        _say()
-        _say(f"    {secret}")
-        _say()
-        hint = (
-            "In Claude's Add custom connector form, under Request headers, "
-            f"add the header authorization with the value: Bearer {secret}"
-            + (
-                " (only for a Claude account that has that section; OAuth "
-                "sign-in, below, needs no secret)"
-                if signin
-                else ""
-            )
-        )
-        _say(hint)
-        if new_secret:
-            _say("The connector secret used before this one no longer works.")
-    else:
-        _say(
-            f"It uses the connector secret kept in {store.secret_path()} (not "
-            "shown again; serve-http --new-secret makes a new one, and the old "
-            "one then stops working)."
-        )
-    try:
-        reached = probe.check(config, client)
-        _say(reached.sentence())
-        if signin:
-            signin.token_role(reached.role)
-    except probe.ProbeError as exc:
-        _say(f"{exc} The door stays open; the tools answer once the app does.")
-    if signin:
-        _say(signin.sentence())
-    _say(
-        "Claude can do through it whatever the API token's role allows. Leave "
-        "this running while Claude should reach the books; press Ctrl+C to "
-        "close the door."
-    )
-    log.info("remote door open on %s port %s", host, bound)
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        httpd.server_close()
-    _say("The remote door is closed.")
-    return 0

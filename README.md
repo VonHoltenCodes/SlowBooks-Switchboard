@@ -40,7 +40,7 @@ with nothing installed.
 ## Set it up
 
 1. In SlowBooks Pro, signed in as an administrator, open **Settings, API
-   Tokens** and make a token: a label you will recognise (it names every
+   Tokens** and make a token: a label you will recognize (it names every
    change Claude makes) and the role Claude should have, **Read-only**,
    **Bookkeeper** or **Accountant**. A bookkeeper token is the usual choice.
    Copy it: it is shown once.

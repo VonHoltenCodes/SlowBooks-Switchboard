@@ -21,11 +21,11 @@
 
 import json
 import logging
-import ssl
 import urllib.error
 import urllib.request
 from http.cookiejar import CookieJar
 
+from sbplive.client import tls_context
 from sbplive.oauth import DEFAULT_FIELDS, Field, SignInRefused
 
 log = logging.getLogger("sbplive")
@@ -63,9 +63,7 @@ class AppSignIn:
         if jar is not None:
             handlers.append(urllib.request.HTTPCookieProcessor(jar))
         if self.base_url.startswith("https://"):
-            handlers.append(
-                urllib.request.HTTPSHandler(context=ssl.create_default_context())
-            )
+            handlers.append(urllib.request.HTTPSHandler(context=tls_context()))
         return urllib.request.build_opener(*handlers)
 
     def _call(self, opener, method: str, path: str, body=None):

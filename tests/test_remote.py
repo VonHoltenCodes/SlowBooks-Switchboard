@@ -140,7 +140,7 @@ def test_modern_discover_list_and_call(door):
     assert result["resultType"] == "complete"
 
     status, _, reply = door.modern(2, "tools/list")
-    assert status == 200 and len(reply["result"]["tools"]) == 21
+    assert status == 200 and len(reply["result"]["tools"]) == 23
     assert reply["result"]["cacheScope"] == "public"
 
     status, _, reply = door.modern(
@@ -155,7 +155,10 @@ def test_modern_write_through_the_door(door, books):
     status, _, reply = door.modern(
         1,
         "tools/call",
-        {"name": "create_customer", "arguments": {"data": {"name": "Remote Co"}}},
+        {
+            "name": "create_customer",
+            "arguments": {"data": {"name": "Remote Co"}, "asked_user": True},
+        },
     )
     assert status == 200 and reply["result"]["isError"] is False
     assert any(
@@ -237,13 +240,16 @@ def test_handshake_session_list_call_and_delete(door, books):
     sid = _handshake(door)
     hdrs = {"Mcp-Session-Id": sid, "MCP-Protocol-Version": PROTOCOL_VERSION}
     status, _, reply = door.rpc(_req(2, "tools/list"), hdrs)
-    assert status == 200 and len(reply["result"]["tools"]) == 21
+    assert status == 200 and len(reply["result"]["tools"]) == 23
     assert "resultType" not in reply["result"]  # the handshake era's shape
     status, _, reply = door.rpc(
         _req(
             3,
             "tools/call",
-            {"name": "create_vendor", "arguments": {"data": {"name": "Legacy Supply"}}},
+            {
+                "name": "create_vendor",
+                "arguments": {"data": {"name": "Legacy Supply"}, "asked_user": True},
+            },
         ),
         hdrs,
     )
@@ -587,7 +593,10 @@ def test_requests_at_the_same_time(door, books):
                     "tools/call",
                     {
                         "name": "create_customer",
-                        "arguments": {"data": {"name": f"Parallel {n}"}},
+                        "arguments": {
+                            "data": {"name": f"Parallel {n}"},
+                            "asked_user": True,
+                        },
                     },
                 ),
                 {"Mcp-Session-Id": sid},

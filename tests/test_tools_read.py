@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from sbplive import tools
+from sbplive import operations, tools
 from sbplive.client import ApiClient, ApiError, Refused
 from sbplive.config import ConfigError, check_url, load_config
 from sbplive.server import build_registry
@@ -113,7 +113,7 @@ def test_check_url_resolves_a_name_for_plain_http(monkeypatch):
     from sbplive import config as cfg
 
     answers = {
-        "office-server.lan": ["192.168.68.10"],
+        "office-server.lan": ["192.168.1.10"],
         "books.example.com": ["93.184.215.14"],
     }
 
@@ -375,9 +375,9 @@ def test_api_schema(api):
 
 
 def test_api_get(api):
-    assert isinstance(tools.api_get(api, "/api/accounts"), list)
+    assert isinstance(operations.api_get(api, "/api/accounts"), list)
     with pytest.raises(ApiError, match="cannot manage users or tokens"):
-        tools.api_get(api, "/api/tokens")
+        operations.api_get(api, "/api/tokens")
 
 
 # ---------------------------------------------------------------------------
@@ -439,3 +439,13 @@ def test_api_schema_reaches_admin_routes_but_not_pages(api):
     assert "not part of the SlowBooks Pro API" in tools.api_schema(api, "/health")
     for path in ("/api/tokens", "/api/users", "/api/backups/restore"):
         assert isinstance(tools.api_schema(api, path), dict), path
+
+
+def test_https_to_the_app_speaks_tls_1_2_at_the_least():
+    import ssl
+
+    from sbplive.client import tls_context
+
+    context = tls_context()
+    assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname

@@ -160,7 +160,13 @@ Read on 2026-11-06 from:
   `ToolAnnotations`: `readOnlyHint` (default false), `destructiveHint`
   (default true, meaningful only for a tool that writes), `idempotentHint`
   (default false), `openWorldHint` (default true). Every tool here sets all
-  four.
+  four: the ten reads read-only; every tool that writes the books
+  `destructiveHint: true` (the spec's false means "only additive updates",
+  and a ledger write never is: a new invoice moves A/R, a payment what its
+  invoices still owe; Anthropic's review asks for it on "tools that modify
+  or delete data"); `idempotentHint: true` for the keyed payments, the void
+  and the delete; `openWorldHint: false` throughout.
+  `tests/test_annotations.py` pins the table.
 
 Handshake-era results carry no `resultType`, `ttlMs` or `_meta` serverInfo:
 the answers are byte for byte what they were.
@@ -191,6 +197,49 @@ the answers are byte for byte what they were.
 
 Capabilities declare `tools` only (`listChanged: false`), in both eras. There
 are no resources, prompts, logging, subscriptions or tasks.
+
+## Who the server is (serverInfo: name, title, website, icons)
+
+Read on **2026-11-19**: the 2025-11-25
+[schema](https://modelcontextprotocol.io/specification/2025-11-25/schema)
+(`Implementation`, `Icon`, `Icons`) and
+[lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)
+example; the 2026-07-28
+[schema](https://modelcontextprotocol.io/specification/2026-07-28/schema)
+and the *Icons* security rules of its
+[base protocol overview](https://modelcontextprotocol.io/specification/2026-07-28/basic/index).
+
+Both revisions describe the server with the same `Implementation`: `name`
+and `version` (required), `title` (display name), `description`,
+`websiteUrl`, and `icons`, an array of `Icon` objects: `src` (an http(s)
+URL or a `data:` URI with base64 data), `mimeType`, `sizes` (an array of
+`"WxH"` strings, or `"any"` for a scalable format) and `theme`
+(`"light"`/`"dark"`). A client that shows icons MUST take `image/png` and
+`image/jpeg` and SHOULD take `image/svg+xml` and `image/webp`. 2025-11-25
+asks consumers to take icons from the server's own domain or a trusted
+one, and to be careful with SVG. 2026-07-28 makes it firmer: only `https:`
+or `data:` URIs, fetched **without credentials**, **from the same origin
+as the server**, with the content checked against a type allowlist.
+
+| | 2025-11-25 | 2026-07-28 |
+|---|---|---|
+| Where | `initialize`'s `serverInfo` | `_meta["io.modelcontextprotocol/serverInfo"]` (SHOULD be on every result) |
+
+What this server gives (`protocol.SERVER_INFO`, `make_server_info`):
+
+- `name: "sbplive"`, never changed (clients key on it); `title: "SlowBooks
+  Pro"`; `version`; `websiteUrl: "https://www.slowbookspro.com/connect/"`.
+- `icons` on `initialize`'s `serverInfo` and on `server/discover`'s
+  `_meta` serverInfo. Every other modern result's `_meta` serverInfo names
+  the server without them, so a tool answer does not carry images.
+- On stdio and the self-hosted door, which have no web address of their own
+  to point at: two `data:` URIs, PNG 48x48 and 96x96 (64 colors, about
+  2.9 KB of base64 together).
+- No per-tool icons: every tool is the same product's, and they are optional.
+
+The pictures are SlowBooks Pro's logo, the turtle on a white square, held in
+`sbplive/protocol.py` as data (between its ICON markers): nothing is read
+from disk or fetched for them at run time.
 
 ## What the specification left unclear
 
@@ -304,7 +353,7 @@ Every answer to a request is one `application/json` body with its
 | Status of other modern JSON-RPC errors | 2026-07-28 names 400 for header and version failures and `MissingRequiredClientCapabilityError`, 404 for `-32601` | As the SDK's table: `-32700`, `-32600`, `-32602`, `-32020`, `-32022` are `400`; `-32601` is `404`; anything else (`-32603`) stays `200`. A tool's own failure is a result with `isError`, `200` |
 | Dual-era: modern `_meta` is served statelessly; `initialize` selects legacy semantics *"scoped ... to the session (HTTP)"*; both MAY be served on the same endpoint | 2026-07-28, Versioning | Era picked per request by the body, as on stdio (the SDK picks by the `MCP-Protocol-Version` header and notes body-first as its follow-up); every modern request goes to one `Session` that never sees `initialize`; each `initialize` gets a `Session` of its own |
 | Session id: MAY be assigned in the `initialize` response's `MCP-Session-Id`; globally unique, cryptographically secure, visible ASCII | 2025-11-25, Session Management | Always assigned: 32 characters of `secrets.token_urlsafe` |
-| Requests without the session id SHOULD get `400`; a terminated session MUST get `404`; DELETE MAY be refused with 405 | 2025-11-25, Session Management | `400` (but `ping`, which needs no session, is answered), `404`, DELETE honoured |
+| Requests without the session id SHOULD get `400`; a terminated session MUST get `404`; DELETE MAY be refused with 405 | 2025-11-25, Session Management | `400` (but `ping`, which needs no session, is answered), `404`, DELETE honored |
 | `MCP-Protocol-Version` on later requests; absent: assume the negotiated version (or 2025-03-26 if none); invalid or unsupported: `400` | 2025-11-25, Protocol Version Header | In a session, absent is 2025-11-25 (the session's own), anything other than 2025-11-25 is `400`. `initialize` itself is not checked: its version is in its body |
 | Resumability, `Last-Event-ID`, server-initiated requests on SSE | 2025-11-25 (MAY) | None: there are no streams to resume |
 | Clients MUST send `Accept` listing `application/json` and `text/event-stream` | Both | A server-side check is not required by the text: a given `Accept` that does not take JSON is `406` (the SDK's answer); none at all is taken to mean anything |
@@ -439,7 +488,7 @@ and an extra warning for loopback-only clients.
 
 | Point | 2025-11-25 | 2026-07-28 | What this door does |
 |---|---|---|---|
-| Dynamic Client Registration | MAY, "for backwards compatibility" | MAY, and **deprecated** in favour of CIMD; a DCR client MUST send `application_type` | Both offered: `registration_endpoint` and `client_id_metadata_document_supported: true` (Claude falls back to DCR without the CIMD pair; Anthropic's page). `application_type` is accepted and echoed, not required, since a 2025-11-25 client need not send it |
+| Dynamic Client Registration | MAY, "for backwards compatibility" | MAY, and **deprecated** in favor of CIMD; a DCR client MUST send `application_type` | Both offered: `registration_endpoint` and `client_id_metadata_document_supported: true` (Claude falls back to DCR without the CIMD pair; Anthropic's page). `application_type` is accepted and echoed, not required, since a 2025-11-25 client need not send it |
 | `iss` on the authorization response (RFC 9207) | Not mentioned | Servers SHOULD send it and, when they do, MUST advertise `authorization_response_iss_parameter_supported: true`; clients MUST compare it | Sent on every redirect, the error ones included, and advertised. A 2025-11-25 client ignores a parameter it does not know |
 | Metadata `issuer` validation | Not stated | Clients MUST reject metadata whose `issuer` differs from the issuer the well-known URL was built from | The issuer is the public URL exactly (no path, no trailing slash), the same string in `authorization_servers`, `issuer` and `iss` |
 | `offline_access` | Not mentioned | Clients MAY ask for it when the AS lists it; resources SHOULD NOT list it in `WWW-Authenticate` scope or the PRM's `scopes_supported` | Listed only in the authorization server's `scopes_supported`; the PRM and the 401 say `books`. A refresh token is issued only when `offline_access` was asked |
@@ -461,7 +510,7 @@ and the stateless door (2026-07-28) check it the same way, on every request.
 | PRM `resource` equals the URL the person enters; `authorization_servers` first entry used | Anthropic; RFC 9728 | `resource` = `<public URL>/mcp`; `authorization_servers` = `[<public URL>]`; `bearer_methods_supported: ["header"]`; `scopes_supported: ["books"]` |
 | AS metadata at `/.well-known/oauth-authorization-server` (no path insertion for an issuer without a path) | RFC 8414 3.1; both revisions | Served, with `issuer`, the three endpoints, `response_types_supported: ["code"]`, `grant_types_supported`, `code_challenge_methods_supported: ["S256"]`, `token_endpoint_auth_methods_supported: ["none"]`, `client_id_metadata_document_supported`, `authorization_response_iss_parameter_supported`, `scopes_supported: ["books", "offline_access"]`. OpenID discovery is not served (404): MCP clients try RFC 8414 first |
 | CIMD is used by Claude only with `client_id_metadata_document_supported: true` **and** `none` in `token_endpoint_auth_methods_supported` | Anthropic | Both advertised |
-| DCR: JSON, `redirect_uris` required, errors `invalid_redirect_uri` / `invalid_client_metadata`, the server may replace values | RFC 7591 2, 3.2 | `201` with `client_id`, `client_id_issued_at`, the URIs, grants, `token_endpoint_auth_method: none` (always: every client is public; `private_key_jwt` is refused as metadata this door cannot honour). No secret. 30 registrations an hour per address; a registration is forgotten after 90 days |
+| DCR: JSON, `redirect_uris` required, errors `invalid_redirect_uri` / `invalid_client_metadata`, the server may replace values | RFC 7591 2, 3.2 | `201` with `client_id`, `client_id_issued_at`, the URIs, grants, `token_endpoint_auth_method: none` (always: every client is public; `private_key_jwt` is refused as metadata this door cannot honor). No secret. 30 registrations an hour per address; a registration is forgotten after 90 days |
 | CIMD: fetch the `https` URL, `client_id` must equal it, `redirect_uris` required, cache, SSRF | Both revisions; the draft, section 6 | A `client_id` starting `https://` (with a path) is fetched: 10 s, 64 KiB, no redirects followed, certificates verified, and only when every address the host resolves to is public; cached a day. A document with another `client_id`, no `redirect_uris`, or an auth method other than `none` is refused on the page |
 | Exact redirect URIs; loopback port ignored, `localhost` too | Both revisions; RFC 8252 7.3; Anthropic | Accepted at all: `https://claude.ai/api/mcp/auth_callback`, and `http://localhost/callback`, `http://127.0.0.1/callback`, `http://[::1]/callback` on any port. A request's URI must match one the client registered (or its document lists) and that list |
 | Bad client or redirect URI: never redirect | RFC 6749 4.1.2.1 | A page with the sentence, status `400`, no `Location` |

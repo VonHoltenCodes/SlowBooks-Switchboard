@@ -29,7 +29,7 @@ computer.
 ## Set it up
 
 1. In SlowBooks Pro, signed in as an administrator, open Settings, API
-   Tokens, and make a token. Give it a label you will recognise (it names
+   Tokens, and make a token. Give it a label you will recognize (it names
    every change Claude makes in the audit log, as `token:<label>`) and the
    role Claude should have: **Read-only**, **Bookkeeper** or **Accountant**.
    Copy the token: it is shown once.
@@ -39,7 +39,7 @@ computer.
    SlowBooks Switchboard setup
    Where are the books? Press Enter for this computer (http://127.0.0.1:3001), or type the address of the office's SlowBooks Pro server:
    Paste the API token from SlowBooks Pro, Settings, API Tokens (it starts with sbp_ and is not shown as you type):
-   SlowBooks Pro answered at http://127.0.0.1:3001: the company is Larkspur Test Fencing (SlowBooks Pro 2.31.8), and the token works as a bookkeeper (the daily books but not settings or payroll).
+   SlowBooks Pro answered at http://127.0.0.1:3001: the company is Larkspur Test Fencing (SlowBooks Pro 2.32.0), and the token works as a bookkeeper (the daily books but not settings or payroll).
    The token is stored in /home/you/.config/sbplive/token, which only you can read.
    Connect Claude Desktop (/home/you/.config/Claude/claude_desktop_config.json)? [Y/n]
    Claude Desktop is connected. The file as it was is saved as ...claude_desktop_config.json.bak-sbplive-20261106-150210. Quit Claude Desktop completely and open it again to see SlowBooks among its tools.
@@ -110,8 +110,48 @@ left to SlowBooks Pro itself: PDFs, CSV and IIF files, print pages and
 uploads (open them in the app).
 
 Payments carry a key, so a payment Claude retries after a lost answer is
-booked once. Voids leave a reversing entry; nothing is deleted. Claude Desktop
-and Claude Code ask you before each change.
+booked once. Voids leave a reversing entry; nothing is deleted. Every change
+is marked so that Claude Desktop and Claude Code can ask you before it runs.
+
+### Asking before a bare create
+
+An assistant does what it is asked, and a customer entered from a name
+alone may be one that should have been checked first. So Switchboard holds
+back a new customer, vendor, item, employee, account, invoice, bill,
+expense, estimate or purchase order that carries only what SlowBooks Pro requires:
+nothing is written, and the assistant is told which fields are empty (as
+the app's forms name them: for a customer, Company, Email, Phone, Billing
+address, Terms and Sales Tax) and to ask you whether you have any of them,
+inventing none. It then creates the record with what you gave, or as it is
+if you say so. A record that already fills at least half of those fields
+(one of three for an account and for a document; for a document's lines,
+an item or a description on each) is created at once. After every create
+the assistant hears two lists, so it can tell you: what was left blank
+(`left_blank`), and what it did not give that SlowBooks Pro filled with its
+own default, with the value used (`defaulted`: a customer's terms "Net 30"
+and "taxable", a vendor's terms and 1099, an invoice's terms and due date,
+a bill's number; for an item with no income or expense account, the
+account the app will post its sales to instead, read from your chart).
+
+### Sales tax on a new sales document
+
+SlowBooks Pro's API takes a missing tax rate as 0%, while its own forms
+start a new invoice, estimate, sales receipt or credit memo at the
+company's Default Tax Rate (Settings), and a credit memo for an invoice at
+that invoice's rate. Switchboard does what the form does: when the
+assistant gives no `tax_rate`, the document gets the company's default, and
+the answer says so (`tax_rate_source`, for example "company default
+(6.25%)", and `tax_note`, a sentence to pass on). A rate the assistant
+gives, 0 included, is always used as given. A non-taxable customer, or a
+document marked tax exempt, is charged no tax whatever the rate, and the
+note says that instead. If the company's default is 0% and the customer is
+taxable, "Sales tax rate" is one of the fields the assistant asks you
+about, and it is listed in `left_blank` if the document is created without
+one. The API's own default is unchanged.
+
+This is Switchboard's own rule, not SlowBooks Pro's: the app's screens,
+imports and API tokens used directly create records as they always have.
+Updates, payments, voids and reads are not affected.
 
 ### The tools
 
@@ -121,11 +161,14 @@ and Claude Code ask you before each change.
 | `search` | Find records by name, number or amount across the books |
 | `list_records`, `get_record` | One kind of record, or one by id |
 | `list_reports`, `report` | The reports and their options; run one by name |
-| `find_operations`, `describe_operation`, `call_operation` | Reach every operation in the installed app's API, read from the app itself, so they are never out of date |
-| `api_schema`, `api_get` | One route's schema; a read of any route |
-| `create_customer`, `create_vendor`, `create_item` | New records |
-| `create_invoice`, `create_bill`, `create_expense`, `create_journal_entry` | New documents and entries |
-| `record_payment`, `record_bill_payment` | Money in and out, applied to invoices or bills, each with its key |
+| `find_operations`, `describe_operation` | Find any operation in the installed app's API and what it takes, read from the app itself, so they are never out of date |
+| `api_schema`, `api_get` | One route's schema; a read (`GET`) of any route, which changes nothing |
+| `post_operation` | A `POST` to any operation: create a record, or run an action such as a void or an apply |
+| `update_operation` | A `PUT` or `PATCH`: change a record |
+| `delete_operation` | A `DELETE`: remove a record, or, where SlowBooks Pro keeps its history (a customer, vendor or item), make it inactive; the answer's `result` says which (posted documents are voided instead) |
+| `create_customer`, `create_vendor`, `create_item` | New records (a bare one is held back until you were asked, above) |
+| `create_invoice`, `create_bill`, `create_expense`, `create_journal_entry` | New documents and entries (an expense without the account it was paid from is not made: the assistant is given the account the app's form would start at, to check with you) |
+| `record_payment`, `record_bill_payment` | Money in and out, applied to invoices or bills, each with its key; the answer says where the money went (`money_to`, `money_note`: a payment with no deposit account waits in Undeposited Funds until a bank deposit) |
 | `void_record` | Void an invoice, bill, expense, journal entry, payment or bill payment |
 
 ## Turn it off
