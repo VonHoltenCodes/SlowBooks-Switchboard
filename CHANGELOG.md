@@ -27,8 +27,13 @@ The first public release, alongside SlowBooks Pro 2.32.0.
   receipt or credit memo sent without `tax_rate` takes the company's default
   tax rate (a credit memo for an invoice takes that invoice's rate), and the
   answer says so in `tax_rate_source` and `tax_note`. Where the company's
-  default rate is 0% or cannot be read, the answer says to ask the person
-  what rate applies. A rate given, 0 included, is used as given.
+  default rate is 0%, the answer says to ask the person what rate applies;
+  where it cannot be read, no rate is sent and the answer says what rate
+  the saved document carries. A rate given, 0 included, is used as given. A
+  document that is charged no tax because its customer is non-taxable, it is
+  marked tax exempt or (SlowBooks Pro 2.32.0) its job is tax exempt is
+  answered as that: no sales tax was charged, and why. So is a credit memo
+  for an invoice that charged no tax: none is given back.
 - Every tool that changes the books is marked destructive, so a host can ask
   before it runs; the keyed payments, the void and the delete are marked
   idempotent. A delete's answer says in `result` whether the record was

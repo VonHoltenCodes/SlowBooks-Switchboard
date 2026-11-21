@@ -134,6 +134,275 @@ def test_check_url_resolves_a_name_for_plain_http(monkeypatch):
     assert check_url("http://nowhere.lan:3001", must_resolve=False)[0]
 
 
+# Plain http:// goes only to this computer and the networks an office can
+# own (config._LOCAL_NETWORKS). No test here connects anywhere: each calls
+# the check, with name lookups answered by a stub.
+
+LOOPBACK = [
+    "127.0.0.1",
+    "127.255.255.254",
+    "[::1]",
+    "[::ffff:127.0.0.1]",  # IPv4-mapped: judged by the IPv4 address inside
+    "localhost",
+]
+LOCAL = [
+    "10.0.0.1",
+    "10.255.255.254",
+    "172.16.0.1",
+    "172.31.255.254",
+    "192.168.0.1",
+    "192.168.255.254",
+    "169.254.0.1",
+    "169.254.255.254",
+    "[fc00::1]",
+    "[fdff:ffff:ffff:ffff:ffff:ffff:ffff:fffe]",
+    "[fe80::1]",
+    "[febf::1]",
+    "[fe80::1%25eth0]",
+    "[::ffff:10.0.0.5]",
+    "[::ffff:172.16.4.4]",
+    "[::ffff:192.168.1.20]",
+    "[::ffff:169.254.10.10]",
+]
+REFUSED = [
+    "192.0.2.10",  # documentation (TEST-NET-1)
+    "198.51.100.10",  # documentation (TEST-NET-2)
+    "203.0.113.10",  # documentation (TEST-NET-3)
+    "[2001:db8::1]",  # documentation
+    "198.18.0.1",  # benchmark
+    "198.19.255.254",  # benchmark
+    "240.0.0.1",  # reserved
+    "255.255.255.255",  # broadcast
+    "100.64.0.1",  # shared (carrier-grade NAT)
+    "100.127.255.254",  # shared
+    "192.0.0.1",  # protocol assignments
+    "192.88.99.1",  # 6to4 anycast
+    "0.0.0.1",  # "this network"
+    "9.255.255.255",  # each edge of the lists, one address outside
+    "11.0.0.0",
+    "172.15.255.255",
+    "172.32.0.0",
+    "192.167.255.255",
+    "192.169.0.0",
+    "169.253.255.255",
+    "169.255.0.0",
+    "126.255.255.255",
+    "128.0.0.0",
+    "8.8.8.8",  # public
+    "93.184.215.14",
+    "[2606:4700:4700::1111]",  # public
+    "[fec0::1]",  # site-local, withdrawn
+    "[fbff::1]",
+    "[64:ff9b::c0a8:114]",  # NAT64
+    "[2002:c0a8:114::1]",  # 6to4
+    "[100::1]",  # discard only
+    "[::ffff:8.8.8.8]",  # IPv4-mapped, a public address inside
+    "[::ffff:203.0.113.10]",
+    "[::ffff:198.18.0.1]",
+    "[::ffff:100.64.0.1]",
+    "[::ffff:240.0.0.1]",
+]
+NOT_A_COMPUTER = [
+    "0.0.0.0",
+    "[::]",
+    "[::ffff:0.0.0.0]",
+    "224.0.0.1",
+    "239.255.255.250",
+    "[ff02::1]",
+    "[::ffff:224.0.0.1]",
+]
+
+
+def _bare(host):
+    return host.strip("[]").replace("%25", "%")
+
+
+@pytest.mark.parametrize("host", LOOPBACK)
+def test_plain_http_to_this_computer_needs_no_warning(host):
+    url = f"http://{host}:3001"
+    assert check_url(url) == (url, None)
+
+
+@pytest.mark.parametrize("host", LOCAL)
+def test_plain_http_is_taken_on_a_local_network_with_the_warning(host):
+    from sbplive.config import UNENCRYPTED_WARNING
+
+    url = f"http://{host}:3001"
+    assert check_url(url) == (url, UNENCRYPTED_WARNING)
+    assert check_url(url, must_resolve=False) == (url, UNENCRYPTED_WARNING)
+
+
+@pytest.mark.parametrize("host", REFUSED)
+@pytest.mark.parametrize("must_resolve", [True, False])
+def test_plain_http_is_refused_anywhere_else(host, must_resolve):
+    with pytest.raises(ConfigError) as refusal:
+        check_url(f"http://{host}:3001", must_resolve=must_resolve)
+    assert str(refusal.value) == (
+        f"{_bare(host)} is not on a private network, so the address must start "
+        "with https://: over plain http:// the API token would cross the "
+        "internet unencrypted."
+    )
+    # the same host over https:// is taken: its certificate is verified
+    assert check_url(f"https://{host}:3001") == (f"https://{host}:3001", None)
+
+
+@pytest.mark.parametrize("host", NOT_A_COMPUTER)
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_no_address_and_multicast_are_never_a_computer(host, scheme):
+    with pytest.raises(ConfigError, match="is not the address of a computer"):
+        check_url(f"{scheme}://{host}:3001")
+
+
+# A zone (%eth0) belongs on an IPv6 address and nowhere else. The program
+# connects to the host with its percent escapes undone, so that is the host
+# that is judged: an address in front of a "%" says nothing about where a
+# name goes.
+PERCENT_HOSTS = [
+    "10.0.0.1%2eevil.test",  # connects to the name 10.0.0.1.evil.test
+    "10.0.0.1%.evil.test",
+    "10.0.0.1%25eth0",
+    "192.168.1.20%25",
+    "127.0.0.1%2eevil.test",
+    "[::1%2e2.3.4]",  # connects to ::1.2.3.4, which is not this computer
+    "[fe80::1%25]",  # a zone with nothing in it
+    "office%2dserver.lan",
+]
+
+
+@pytest.fixture
+def no_lookup(monkeypatch):
+    from sbplive import config as cfg
+
+    def getaddrinfo(*args, **kwargs):
+        raise AssertionError("a host with % in it must not be looked up")
+
+    monkeypatch.setattr(cfg.socket, "getaddrinfo", getaddrinfo)
+
+
+@pytest.mark.parametrize("host", PERCENT_HOSTS)
+@pytest.mark.parametrize("must_resolve", [True, False])
+def test_a_percent_does_not_make_a_host_a_local_address(host, must_resolve, no_lookup):
+    with pytest.raises(ConfigError) as refusal:
+        check_url(f"http://{host}:3001", must_resolve=must_resolve)
+    assert str(refusal.value) == (
+        f"{host.strip('[]')} is not on a private network, so the address must "
+        "start with https://: over plain http:// the API token would cross "
+        "the internet unencrypted."
+    )
+
+
+@pytest.mark.parametrize("host", ["[fe80::1%25eth0]", "[fe80::1%eth0]"])
+def test_a_zone_on_a_link_local_ipv6_address_is_taken(host, no_lookup):
+    from sbplive.config import UNENCRYPTED_WARNING
+
+    url = f"http://{host}:3001"
+    assert check_url(url) == (url, UNENCRYPTED_WARNING)
+
+
+def test_an_escaped_local_address_is_judged_as_the_address_it_is(no_lookup):
+    from sbplive.config import UNENCRYPTED_WARNING
+
+    url = "http://%31%30.0.0.1:3001"  # the program connects to 10.0.0.1
+    assert check_url(url) == (url, UNENCRYPTED_WARNING)
+    with pytest.raises(ConfigError, match="is not on a private network"):
+        check_url("http://%31%39%32.0.2.10:3001")  # 192.0.2.10
+
+
+def test_the_local_networks_are_the_listed_ones_and_no_more():
+    from sbplive import config as cfg
+
+    assert sorted(str(n) for n in cfg._LOCAL_NETWORKS) == sorted(
+        [
+            "127.0.0.0/8",
+            "::1/128",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "169.254.0.0/16",
+            "fc00::/7",
+            "fe80::/10",
+        ]
+    )
+
+
+# name -> the addresses the lookup gives, as getaddrinfo writes them
+NAMES = {
+    "one-good.lan": ["192.168.1.10"],
+    "two-good.lan": ["10.1.2.3", "fd00::20"],
+    "link-local.lan": ["fe80::1%eth0", "169.254.7.7"],
+    "mapped-good.lan": ["::ffff:192.168.1.10"],
+    "one-bad.example": ["93.184.215.14"],
+    "documentation.example": ["203.0.113.9"],
+    "benchmark.example": ["198.18.0.9"],
+    "shared.example": ["100.64.0.9"],
+    "mapped-bad.example": ["::ffff:203.0.113.9"],
+    "mixed.example": ["192.168.1.10", "203.0.113.9"],
+    "mixed-six.example": ["fd00::20", "2001:db8::9"],
+    "mixed-last.example": ["10.0.0.1", "172.16.0.1", "198.51.100.9"],
+    "nothing.example": [],
+}
+GOOD_NAMES = [n for n in NAMES if n.endswith(".lan")]
+BAD_NAMES = [n for n in NAMES if n.endswith(".example")]
+
+
+@pytest.fixture
+def lookups(monkeypatch):
+    """Name lookups answered from NAMES; a name not in it is not found. The
+    real resolver is never asked."""
+    from sbplive import config as cfg
+
+    asked = []
+
+    def getaddrinfo(host, port, *args, **kwargs):
+        asked.append((host, port))
+        if host not in NAMES:
+            raise cfg.socket.gaierror("Name or service not known")
+        out = []
+        for text in NAMES[host]:
+            six = ":" in text
+            family = cfg.socket.AF_INET6 if six else cfg.socket.AF_INET
+            where = (text, port, 0, 0) if six else (text, port)
+            out.append((family, cfg.socket.SOCK_STREAM, 6, "", where))
+        return out
+
+    monkeypatch.setattr(cfg.socket, "getaddrinfo", getaddrinfo)
+    return asked
+
+
+@pytest.mark.parametrize("name", GOOD_NAMES)
+def test_a_name_is_taken_when_every_address_is_local(lookups, name):
+    from sbplive.config import UNENCRYPTED_WARNING
+
+    url = f"http://{name}:3001"
+    assert check_url(url) == (url, UNENCRYPTED_WARNING)
+    assert lookups == [(name, 3001)]
+
+
+@pytest.mark.parametrize("name", BAD_NAMES)
+@pytest.mark.parametrize("must_resolve", [True, False])
+def test_a_name_is_refused_when_any_address_is_not_local(lookups, name, must_resolve):
+    with pytest.raises(ConfigError) as refusal:
+        check_url(f"http://{name}:3001", must_resolve=must_resolve)
+    assert str(refusal.value) == (
+        f"{name} is not on a private network, so the address must start with "
+        "https://: over plain http:// the API token would cross the internet "
+        "unencrypted."
+    )
+
+
+def test_a_name_that_is_not_found_is_as_before(lookups):
+    with pytest.raises(ConfigError, match="could not be found on the network"):
+        check_url("http://nowhere.lan:3001")
+    # the server, started by a host, lets it through to say the app did not answer
+    url = "http://nowhere.lan:3001"
+    assert check_url(url, must_resolve=False)[0] == url
+    # https:// and this computer's own name are never looked up
+    del lookups[:]
+    assert check_url("https://one-bad.example") == ("https://one-bad.example", None)
+    assert check_url("http://localhost:3001") == ("http://localhost:3001", None)
+    assert lookups == []
+
+
 def test_config_reads_the_store_when_nothing_is_set(monkeypatch):
     from sbplive import store
 
@@ -353,7 +622,7 @@ def test_list_journal_entries_unwraps_the_page_envelope(api, books):
 def test_reports(api):
     names = [r["name"] for r in tools.list_reports(api)]
     assert "profit-loss" in names and "balance-sheet" in names
-    assert not any(n.endswith(("/pdf", "/csv")) for n in names)
+    assert not any(n.endswith(("/pdf", "/csv", "/print")) for n in names)
     data = tools.report(
         api, "profit-loss", {"start_date": "2026-01-01", "end_date": "2026-12-31"}
     )
