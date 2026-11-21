@@ -52,11 +52,19 @@ class AppSignIn:
     at base_url. role_phrase is what the API token works as, for the page."""
 
     def __init__(
-        self, base_url: str, *, role_phrase: str | None = None, timeout=TIMEOUT
+        self,
+        base_url: str,
+        *,
+        role_phrase: str | None = None,
+        timeout=TIMEOUT,
+        company: str | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.role_phrase = role_phrase
         self.timeout = timeout
+        # The company file to sign in to (X-SlowBooks-Company), when the door
+        # serves one of several companies; None is the app's own default.
+        self.company = company
 
     def _opener(self, jar=None):
         handlers = [_NoRedirect()]
@@ -66,13 +74,19 @@ class AppSignIn:
             handlers.append(urllib.request.HTTPSHandler(context=tls_context()))
         return urllib.request.build_opener(*handlers)
 
+    def _headers(self) -> dict:
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if self.company:
+            headers["X-SlowBooks-Company"] = self.company
+        return headers
+
     def _call(self, opener, method: str, path: str, body=None):
         data = json.dumps(body).encode("utf-8") if body is not None else None
         req = urllib.request.Request(
             self.base_url + path,
             data=data,
             method=method,
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            headers=self._headers(),
         )
         try:
             with opener.open(req, timeout=self.timeout) as resp:

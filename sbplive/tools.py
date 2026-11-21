@@ -6,6 +6,7 @@
 
 import difflib
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
@@ -49,9 +50,35 @@ def _kind_path(kind: str) -> str:
 
 
 def _spec(client: ApiClient) -> dict:
-    if client.spec is None:
-        client.spec = client.get("/openapi.json")
-    return client.spec
+    return client.openapi()
+
+
+# ---------------------------------------------------------------------------
+# Which books the call works. The registry sets this around every tool call
+# (registry.Registry.call), in the thread that runs the call, so two calls on
+# two threads never see each other's books. A tool reads it only to name the
+# books in what it tells the assistant to do next.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Called:
+    books: str | None  # the handle; None when the connection names none
+    name: str  # the company's name, as the connection keeps it
+    file: str  # the company's file, "" when not known
+    many: bool  # the connection reaches more than one company
+
+
+CALLED: ContextVar[Called | None] = ContextVar("sbplive_called", default=None)
+
+
+def named_books() -> str | None:
+    """The handle to name in a next step, on a connection of several
+    companies; None when one company needs no naming."""
+    called = CALLED.get()
+    if called is None or not called.many or not called.books:
+        return None
+    return called.books
 
 
 ROLE_PHRASES = {
@@ -92,6 +119,11 @@ def role_of(client: ApiClient) -> str | None:
 def context(client: ApiClient) -> dict:
     """Company and app facts to read before working."""
     out: dict = {}
+    called = CALLED.get()
+    if called is not None and called.books:
+        out["books"] = called.books
+        if called.file:
+            out["company_file"] = called.file
     status = client.get("/api/auth/status")
     out["company"] = status.get("company_name") or ""
     if status.get("accountants_copy"):
@@ -108,12 +140,6 @@ def context(client: ApiClient) -> dict:
     if role:
         out["token_role"] = role
         out["token_role_means"] = "The API token " + ROLE_PHRASES[role] + "."
-    try:
-        out["companies"] = [
-            c.get("name") for c in client.get("/api/companies") if isinstance(c, dict)
-        ]
-    except ApiError:
-        pass
     return out
 
 
@@ -257,14 +283,37 @@ def report(client: ApiClient, name: str, params: dict | None = None):
 # ---------------------------------------------------------------------------
 
 _KEY_RE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+_UNKNOWN = "The outcome is unknown: the request may or may not have reached the books."
 _RETRY_SAME_KEY = (
-    "The outcome is unknown: the request may or may not have reached the "
-    "books. Retry with the same key and the same data; the API books it once."
+    f"{_UNKNOWN} Retry with the same key and the same data; the API books it once."
 )
-_CHECK_FIRST = (
-    "The outcome is unknown: the request may or may not have reached the "
-    "books. Check with list_records or search before retrying."
-)
+_CHECK_FIRST = f"{_UNKNOWN} Check with list_records or search before retrying."
+
+
+def _retry_same_key() -> str:
+    books = named_books()
+    if books is None:
+        return _RETRY_SAME_KEY
+    return (
+        f"{_UNKNOWN} Retry with the same key, the same data and the same books "
+        f"({books}); the API books it once."
+    )
+
+
+def _check_first() -> str:
+    books = named_books()
+    if books is None:
+        return _CHECK_FIRST
+    return (
+        f"{_UNKNOWN} Check with list_records or search, with books: {books}, "
+        "before retrying."
+    )
+
+
+def _with_books(text: str) -> str:
+    """' and books: <handle>' on a connection of several companies."""
+    books = named_books()
+    return f"{text} and books: {books}" if books else text
 
 
 def _write(
@@ -288,7 +337,7 @@ def _write(
         if exc.status == 0:
             raise ValueError(
                 f"{str(exc.detail).rstrip('.')}. "
-                f"{_RETRY_SAME_KEY if key else _CHECK_FIRST}"
+                f"{_retry_same_key() if key else _check_first()}"
             ) from None
         raise
 
@@ -517,6 +566,18 @@ def ask_first(route: str, data, asked_user: bool, tool: str, known=None, tax=Non
         empty.append(TAX_LABEL)
         rows.append({"label": TAX_LABEL, "field": "tax_rate"})
     labels = ", ".join(empty)
+    books = named_books()
+    if books:
+        again = (
+            f"Then call {tool} again with what they gave, asked_user: true and "
+            f"books: {books}, or with asked_user: true and books: {books} alone "
+            "if they want it created as it is."
+        )
+    else:
+        again = (
+            f"Then call {tool} again with what they gave and asked_user: true, "
+            "or with asked_user: true alone if they want it created as it is."
+        )
     return {
         "created": False,
         "ask_first": True,
@@ -525,9 +586,7 @@ def ask_first(route: str, data, asked_user: bool, tool: str, known=None, tax=Non
         "next": (
             f"Nothing was created yet: {rule.record} with this little on it "
             f"may need checking first. Ask the user whether they have any of "
-            f"these: {labels}. Do not make any up. Then call {tool} again with "
-            f"what they gave and asked_user: true, or with asked_user: true "
-            f"alone if they want it created as it is."
+            f"these: {labels}. Do not make any up. {again}"
         ),
     }
 
@@ -1009,14 +1068,14 @@ def paid_from_hold(client: ApiClient, route: str, data, tool: str):
             "Nothing was created yet: an expense needs the account it was paid "
             f"from. SlowBooks Pro's form would start at {label}. Ask the user "
             "whether it was paid from that account or which one, then call "
-            f"{tool} again with paid_from_account_id."
+            f"{tool} again with {_with_books('paid_from_account_id')}."
         )
     else:
         out["next"] = (
             "Nothing was created yet: an expense needs the account it was paid "
             "from, and the company has no bank account to suggest. Ask the "
             f"user which account paid it, then call {tool} again with "
-            "paid_from_account_id."
+            f"{_with_books('paid_from_account_id')}."
         )
     return out
 

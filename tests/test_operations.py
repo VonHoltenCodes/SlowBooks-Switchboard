@@ -84,6 +84,23 @@ def test_the_document_is_fetched_once(spec):
     assert fetched == ["/openapi.json"]
 
 
+def test_the_document_is_fetched_once_per_connection(spec):
+    from sbplive.client import SpecHolder
+
+    fetched = []
+
+    def transport(method, path, params, body, headers):
+        fetched.append(path)
+        return 200, spec
+
+    holder = SpecHolder()
+    first = ApiClient(transport, company="a.db", spec_holder=holder)
+    second = ApiClient(transport, company="b.db", spec_holder=holder)
+    operations.find_operations(first, "invoice")
+    operations.describe_operation(second, "GET", "/api/invoices")
+    assert fetched == ["/openapi.json"]
+
+
 # ---------------------------------------------------------------------------
 # find_operations
 # ---------------------------------------------------------------------------
@@ -448,6 +465,11 @@ def test_random_operations_build_correct_requests(spec, seed):
             continue
         if kind:
             with pytest.raises(ValueError, match="for a person to open"):
+                send(client, method, template, params, body, key)
+            assert spy.sent == []
+            continue
+        if template.startswith("/api/auth/") and method.upper() != "GET":
+            with pytest.raises(ValueError, match="where people sign in"):
                 send(client, method, template, params, body, key)
             assert spy.sent == []
             continue

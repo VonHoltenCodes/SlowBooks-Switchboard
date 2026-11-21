@@ -393,3 +393,96 @@ def test_official_client_with_a_client_id_metadata_document(books, fake_server, 
     finally:
         door.close()
         docs.close()
+
+
+# -- two companies on one connection -------------------------------------------
+
+
+@pytest.fixture
+def two_companies(spec, tmp_path, home):
+    """Two companies behind one fake app over HTTP, and the stdio server of
+    tests/bookskit.py reaching both, each through its own token."""
+    import os
+
+    from bookskit import new_handle
+    from conftest import HOME_VARS, home_env
+    from fakeapi import FakeInstall, FakeInstallServer
+
+    install = FakeInstall(
+        spec, {"harbor-books.db": "Harbor Books", "smith-plumbing.db": "Smith Plumbing"}
+    )
+    listed = [
+        {
+            "books": new_handle(file),
+            "name": books.company,
+            "file": file,
+            "token": books.token,
+        }
+        for file, books in install.companies.items()
+    ]
+    path = tmp_path / "books.json"
+    path.write_text(json.dumps(listed))
+    if os.name != "nt":
+        path.chmod(0o600)
+    with FakeInstallServer(install) as server:
+        env = {k: v for k, v in os.environ.items() if k not in HOME_VARS}
+        env = {k: v for k, v in env.items() if not k.startswith("SBPLIVE_")}
+        env.update(home_env(home))
+        env["PYTHONPATH"] = ROOT
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=[os.path.join(ROOT, "tests", "bookskit.py"), server.url, str(path)],
+            env=env,
+            cwd=ROOT,
+        )
+        yield install, listed, params
+
+
+async def _two_session(params, mode, harbor, smith):
+    async with Client(params, mode=mode, read_timeout_seconds=30) as c:
+        listed = await c.list_tools()
+        overview = await c.call_tool("context", {})
+        unnamed = await c.call_tool("search", {"q": "Gull"})
+        made = await c.call_tool(
+            "create_customer",
+            {"data": {"name": "Gull Marine"}, "asked_user": True, "books": smith},
+        )
+        found = await c.call_tool("search", {"q": "Gull", "books": harbor})
+    return listed, overview, unnamed, made, found
+
+
+@pytest.mark.parametrize("mode", [MODERN, "legacy"])
+def test_official_client_with_two_companies(two_companies, mode):
+    install, listed, params = two_companies
+    harbor, smith = listed[0]["books"], listed[1]["books"]
+    tools_listed, overview, unnamed, made, found = asyncio.run(
+        _two_session(params, mode, harbor, smith)
+    )
+    for t in tools_listed.tools:
+        assert "books" in t.input_schema["properties"]
+        assert "books" not in t.input_schema.get("required", [])
+
+    assert overview.is_error is False
+    seen = json.loads(overview.content[0].text)
+    assert [b["books"] for b in seen["books"]] == [harbor, smith]
+
+    assert unnamed.is_error is True
+    assert "names one with books" in unnamed.content[0].text
+
+    assert made.is_error is False
+    assert made.content[0].text == f"Books: Smith Plumbing ({smith})."
+    assert json.loads(made.content[1].text)["name"] == "Gull Marine"
+    names = [
+        r["name"]
+        for r in install.companies["smith-plumbing.db"]
+        .records["/api/customers"]
+        .values()
+    ]
+    assert names == ["Gull Marine"]
+
+    assert found.is_error is False
+    assert found.content[0].text == f"Books: Harbor Books ({harbor})."
+    assert json.loads(found.content[1].text) == {}
+    for token, named, _m, path in install.requests:
+        if path != "/openapi.json":
+            assert token == install.token_of(named[0])

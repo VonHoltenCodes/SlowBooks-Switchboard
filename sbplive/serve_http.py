@@ -44,7 +44,17 @@ def run_http(
     except ConfigError as exc:
         _say(str(exc))
         return 2
-    client = ApiClient(urllib_transport(config))
+    # The door serves one company: setup's token, or with several companies
+    # kept, the first of them (its sign-in is that company's too).
+    company = config.company or None
+    client = ApiClient(urllib_transport(config), company=company, expect_served=company)
+    if len(config.books) > 1:
+        first = next(iter(config.books.values()))
+        others = "Claude Desktop"
+        _say(
+            f"The self-hosted sign-in door serves only {first.name or first.file} "
+            f"in this version; the other companies are reachable from {others}."
+        )
     door = remote.Door(
         build_registry(client),
         INSTRUCTIONS,

@@ -29,10 +29,20 @@ computer.
 ## Set it up
 
 1. In SlowBooks Pro, signed in as an administrator, open Settings, API
-   Tokens, and make a token. Give it a label you will recognize (it names
-   every change Claude makes in the audit log, as `token:<label>`) and the
-   role Claude should have: **Read-only**, **Bookkeeper** or **Accountant**.
-   Copy the token: it is shown once.
+   Tokens, and make a token. Give it a name that starts with "AI
+   assistant", such as `AI assistant (Switchboard)` (it names every change
+   Claude makes in the audit log, as `token:<name>`), and the role Claude
+   should have: **Read-only**, **Bookkeeper** or **Accountant**. Copy the
+   token: it is shown once. SlowBooks Pro turns a token with such a name
+   off by itself when the administrator who made it is deactivated or is
+   no longer an administrator there, and setup refuses a new token with
+   any other name, even one given to replace a token it stored before: it
+   stores nothing, connects nothing, leaves a token it stored before as it
+   was, and says "Nothing was changed." A SlowBooks Pro older than
+   2.32.0-beta.2 cannot say how a token is named; setup then goes on and
+   says that updating SlowBooks Pro will let it check. Setup run again with
+   no new token keeps the token it stored before and does not check it
+   again.
 2. Run `sbplive setup`. It asks:
 
    ```
@@ -70,11 +80,74 @@ given on the command line itself. `--no-claude-desktop` and
 `--no-claude-code` leave either alone. Running setup again replaces the
 stored token and address and the entries it made; nothing doubles up.
 
+### Several companies on one connection
+
+An accountant who keeps the books of several clients can reach each of them
+through the same connection, so Claude needs no second entry. This needs
+SlowBooks Pro 2.32.0-beta.2 or newer, which can say which company a token
+opens. For each company:
+
+1. In SlowBooks Pro, open that company, sign in as its administrator, and
+   make a **Bookkeeper** token under Settings, API Tokens, with a name that
+   starts with "AI assistant", such as `AI assistant (Switchboard)`.
+   SlowBooks Pro turns such a token off by itself when the administrator
+   who made it is deactivated or is no longer an administrator there, so a
+   client who ends your access ends this connection's too. `add-books`
+   refuses a token with any other name, and the token setup stored is held
+   to the same rule when the first company is added (a token stored by an
+   earlier setup, or by one run against an older SlowBooks Pro, may have
+   another name: make a new one and run setup with it first).
+2. Run `sbplive add-books --file <the company's file>`, such as
+   `sbplive add-books --file smith-plumbing.db`, and paste the token (or
+   pass `--token-file`, or `--token-file -` for standard input).
+
+`add-books` asks SlowBooks Pro which company the token opens, and keeps it
+only when the answer comes from that same file and the token is a
+bookkeeper's. It then says:
+
+```
+Added Smith Plumbing's books as smith-plumbing~k3f9q2 (bookkeeper).
+```
+
+`smith-plumbing~k3f9q2` is the company's **handle**. The last six letters
+are random and made on this computer when the company is added, so no other
+computer's handle, and no company's name or file, ever reaches these books.
+Claude reads the handles with its `context` tool and names one on every call
+(the `books` argument). With one company on the connection it may leave it
+out; with more it must give it, and a call that names none is refused before
+anything is sent. Every answer then starts with the company it came from,
+such as "Books: Smith Plumbing (smith-plumbing~k3f9q2)."
+
+The first `add-books` keeps the token setup stored as the first company,
+with a handle of its own: nothing has to be set up again. A connection
+set up with one token and never given another works exactly as before.
+Setup's own token file stays where it is, so if you go back to
+Switchboard 1.0.0 it still reaches that first company (and only that one);
+`remove-books` for that company deletes it too.
+
+- `sbplive books` lists the companies, checks each one, and says whether it
+  answers and under which role.
+- `sbplive remove-books <handle>` takes one company off and deletes its
+  stored token. The token itself still works in SlowBooks Pro until you
+  turn it off there (Settings, API Tokens, in that company).
+- A company added or removed while Claude is open is seen on Claude's next
+  call. A company whose token SlowBooks Pro refuses is not tried again until
+  Claude starts the program again; `sbplive books` shows which one it is.
+- All the companies are on one SlowBooks Pro (one address). Running setup
+  again keeps them: it connects Claude and stores no token, and given
+  `--token-file` or `--url` it changes nothing and says so (a new token for
+  a company goes in with `remove-books`, then `add-books`). `SBPLIVE_URL`
+  naming another address is refused while companies are kept, so their
+  tokens never go to a copy of the books on another computer.
+- The self-hosted door ([REMOTE.md](REMOTE.md)) serves only the first
+  company in this version, and its sign-in is that company's.
+
 ### Where things are kept
 
 | What | Where |
 |---|---|
 | The token, the address and (for [REMOTE.md](REMOTE.md)) the connector secret and `oauth.json`, the remote door's sign-ins (hashes only, never a password) | Windows: `%APPDATA%\sbplive\`; Mac: `~/Library/Application Support/sbplive/`; Linux: `~/.config/sbplive/` |
+| Several companies (`add-books`) | Each company's token in `books/<handle>.token` in the same folder (the folder and the files readable by you only); `settings.json` lists each company's handle, file and name, and a hash of its token, never the token |
 | The log | `sbplive.log` in the same folder, up to 1 MB and three older copies. It holds the method, address and answer code of each request, never the token or what was sent |
 | Claude Desktop's entry | `claude_desktop_config.json` (Mac: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\` and the Microsoft Store app's own copy, Linux: `~/.config/Claude/`), as `"sbplive"`; it names the program only, never the token |
 | Claude Code's entry | Your user's Claude Code settings, through `claude mcp add --scope user` |
@@ -88,7 +161,8 @@ and time in the name, and changes nothing in it but the `"sbplive"` entry.
 
 `sbplive status` says, in sentences, whether SlowBooks Pro
 answers, which company and version, which role the token has, whether Claude
-Desktop and Claude Code are connected, and where the log is.
+Desktop and Claude Code are connected, and where the log is. With several
+companies it names each one, with its handle, and says whether it answers.
 
 ## What Claude can do
 
@@ -161,7 +235,7 @@ Updates, payments, voids and reads are not affected.
 
 | Tool | Does |
 |------|------|
-| `context` | The company, its type and closing date, the app's version and the token's role. Claude reads it first |
+| `context` | The company, its type and closing date, the app's version and the token's role. Claude reads it first. On a connection that reaches several companies, it first lists their handles, and every other tool then names one with `books` |
 | `search` | Find records by name, number or amount across the books |
 | `list_records`, `get_record` | One kind of record, or one by id |
 | `list_reports`, `report` | The reports and their options; run one by name |
@@ -181,8 +255,9 @@ Updates, payments, voids and reads are not affected.
   list. Nothing runs when Claude is not using it.
 - **Take it out of Claude:** `sbplive disconnect` removes the
   entries from Claude Desktop (saving the file first) and Claude Code. Add
-  `--forget` to delete the stored token too (and the remote door's connector
-  secret and sign-ins, if [REMOTE.md](REMOTE.md) made them).
+  `--forget` to delete the stored token too, every company's when there are
+  several (and the remote door's connector secret and sign-ins, if
+  [REMOTE.md](REMOTE.md) made them).
 - **Lock it out for good:** revoke the token in SlowBooks Pro under Settings,
   API Tokens. That works even if the token was copied somewhere: the app
   refuses it from then on.
@@ -198,6 +273,26 @@ Updates, payments, voids and reads are not affected.
   any more": make a bookkeeper, accountant or read-only token instead.
 - "is not set up on this computer for this user": run setup as the person who
   uses Claude on this computer.
+- "That token answers from harbor-books.db, not smith-plumbing.db": the token
+  was made in another company. Open the company you are adding, make the
+  token there, and run add-books again.
+- "This SlowBooks Pro is older than 2.32.0-beta.2": update SlowBooks Pro to
+  add a second company; the first keeps working.
+- "... no longer accepts this connection": that company's token was turned
+  off there, or the administrator who made it is no longer one there. Make
+  a new bookkeeper token in that company, then
+  `sbplive remove-books <handle>` and `sbplive add-books` again.
+- "That token is named ..., so SlowBooks Pro keeps it working" (from setup
+  or add-books): make the token again with a name that starts with "AI
+  assistant".
+- "This SlowBooks Pro cannot tell whether the token ends with the
+  administrator who made it": setup went on. Update SlowBooks Pro to
+  2.32.0-beta.2 or newer to have it checked.
+- "The companies' books here were added for ...": `SBPLIVE_URL` names
+  another address. Take it out of the environment.
+- "The list of companies in ... cannot be read": `settings.json` was changed
+  by hand. Put back a copy, or run `sbplive disconnect --forget` and add the
+  companies again.
 - "must start with https://": the address is on the internet; use the
   server's `https://` address.
 - "its certificate could not be verified": the server's certificate is not

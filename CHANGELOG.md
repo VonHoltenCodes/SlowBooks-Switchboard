@@ -1,5 +1,59 @@
 # Changelog
 
+## 1.1.0
+
+For SlowBooks Pro 2.32.0-beta.2 and newer.
+
+- One connection can reach several companies' books. `sbplive add-books
+  --file smith-plumbing.db` adds another company under a bookkeeper token
+  made in that company. SlowBooks Pro is asked first which company the
+  token opens, and it is kept only when the answer comes from that same
+  company. A token from another company, one kept already, a role other
+  than bookkeeper or an older SlowBooks Pro is refused with a sentence, and
+  nothing is saved.
+- Each company gets a handle, such as `smith-plumbing~k3f9q2`, made on this
+  computer when it is added. Every tool takes a `books` argument with that
+  handle, which `context` lists. With one company it may be left out; with
+  more it must be given, and a call that names none, an unknown handle, or
+  a company's name or file is refused before anything is sent. On several
+  companies every answer starts with the company it came from, such as
+  "Books: Smith Plumbing (smith-plumbing~k3f9q2).", and an answer that does
+  not say it came from that company's books stops the call.
+- `sbplive books` lists and checks the companies, `sbplive remove-books
+  <handle>` takes one off, and `sbplive status` names each one. Each
+  company's token is kept in its own file, readable by you only.
+- Set up with 1.0.0? Nothing changes until you add a second company, and
+  nothing has to be set up again: the first `add-books` keeps the token
+  setup stored as the first company. Its file is left in place, so going
+  back to 1.0.0 still reaches that first company, and only that one.
+- A company is added only under a token whose name starts with "AI
+  assistant" (for example "AI assistant (Switchboard)"): SlowBooks Pro turns
+  such a token off when the administrator who made it is deactivated or no
+  longer an administrator there. Setup's token is held to the same rule
+  when the first company is added.
+- `sbplive setup` takes only such a token too when it is given a new one,
+  including one given to replace a token it stored before. Given one with
+  another name, it stores nothing, connects nothing, leaves a token it
+  stored before as it was, and says what to make instead, ending "Nothing
+  was changed." A SlowBooks Pro older than 2.32.0-beta.2 cannot say how a
+  token is named: setup goes on there, and says that updating SlowBooks
+  Pro will let it check. Running setup again with no new token, or with
+  companies kept, works as it did, and a store set up with 1.0.0 has
+  nothing to redo.
+- The companies are kept for one SlowBooks Pro address. `SBPLIVE_URL`
+  naming another one is refused, and no company's token is sent there.
+  Companies added for another address while Claude is open are not
+  reached until Claude starts the program again.
+- With several companies kept, `sbplive setup --token-file` or `--url`
+  changes nothing and says so: a new token for a company goes in with
+  `remove-books`, then `add-books`.
+- A company leaves the connection only when SlowBooks Pro turned its token
+  away, never because one request was refused, and no tool signs in or
+  changes a password through the sign-in routes.
+- The self-hosted door (`serve-http`) serves only the first company in
+  this version, and its sign-in is that company's.
+- `context` no longer lists every company on the server.
+
 ## 1.0.0
 
 The first public release, alongside SlowBooks Pro 2.32.0.

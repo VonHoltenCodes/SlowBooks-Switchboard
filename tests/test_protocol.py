@@ -236,6 +236,11 @@ def test_tools_list(ready):
         }
         for prop in t["inputSchema"]["properties"].values():
             assert prop.get("description"), (t["name"], prop)
+        # every tool names its books the same way, and never needs to
+        books = t["inputSchema"]["properties"]["books"]
+        assert books["type"] == "string"
+        assert "handle exactly as context lists it" in books["description"]
+        assert "books" not in t["inputSchema"].get("required", [])
 
 
 def test_tools_list_with_an_unknown_cursor(ready):

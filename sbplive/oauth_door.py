@@ -48,7 +48,9 @@ def make(config, public_url: str | None):
         issuer = check_public_url(public_url)
     except ValueError as exc:
         raise ConfigError(str(exc)) from None
-    app = AppSignIn(config.base_url)
+    # The sign-in is checked in the company the door serves (with several
+    # companies kept, the first), never in another one.
+    app = AppSignIn(config.base_url, company=getattr(config, "company", "") or None)
     server = OAuthServer(
         issuer,
         FileStore(),
