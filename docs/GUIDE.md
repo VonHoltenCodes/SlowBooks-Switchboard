@@ -125,8 +125,8 @@ address, Terms and Sales Tax) and to ask you whether you have any of them,
 inventing none. It then creates the record with what you gave, or as it is
 if you say so. A record that already fills at least half of those fields
 (one of three for an account and for a document; for a document's lines,
-an item or a description on each) is created at once. After every create
-the assistant hears two lists, so it can tell you: what was left blank
+an item or a description on each) is created at once. After a create of
+one of these records the assistant hears two lists, so it can tell you: what was left blank
 (`left_blank`), and what it did not give that SlowBooks Pro filled with its
 own default, with the value used (`defaulted`: a customer's terms "Net 30"
 and "taxable", a vendor's terms and 1099, an invoice's terms and due date,
@@ -135,22 +135,26 @@ account the app will post its sales to instead, read from your chart).
 
 ### Sales tax on a new sales document
 
-SlowBooks Pro's API takes a missing tax rate as 0%, while its own forms
-start a new invoice, estimate, sales receipt or credit memo at the
-company's Default Tax Rate (Settings), and a credit memo for an invoice at
-that invoice's rate. Switchboard does what the form does: when the
+SlowBooks Pro's own forms start a new invoice, estimate, sales receipt or
+credit memo at the company's Default Tax Rate (Settings), and a credit memo
+for an invoice at that invoice's rate. From SlowBooks Pro 2.32.0 the app's
+API does the same when no rate is sent; before 2.32.0 it took a missing
+rate as 0%. Switchboard does what the form does on either: when the
 assistant gives no `tax_rate`, the document gets the company's default, and
 the answer says so (`tax_rate_source`, for example "company default
 (6.25%)", and `tax_note`, a sentence to pass on). A rate the assistant
-gives, 0 included, is always used as given. A non-taxable customer, or a
-document marked tax exempt, is charged no tax whatever the rate, and the
-note says that instead. If the company's default is 0% and the customer is
-taxable, "Sales tax rate" is one of the fields the assistant asks you
-about, and it is listed in `left_blank` if the document is created without
-one. The API's own default is unchanged.
+gives, 0 included, is always used as given. A non-taxable customer, a
+document marked tax exempt or (from SlowBooks Pro 2.32.0) a document for a
+tax-exempt job is charged no tax whatever the rate, and the answer says
+that instead: no sales tax was charged, and why. A credit memo for an
+invoice that charged no tax gives none back, and the answer says that too.
+If the company's default is 0% and the customer is taxable, "Sales tax
+rate" is one of the fields the assistant asks you about, and it is listed
+in `left_blank` if the document is created without one.
 
-This is Switchboard's own rule, not SlowBooks Pro's: the app's screens,
-imports and API tokens used directly create records as they always have.
+Asking first and the two lists are Switchboard's own, not SlowBooks Pro's:
+the app's screens, imports and API tokens used directly create records as
+they always have.
 Updates, payments, voids and reads are not affected.
 
 ### The tools

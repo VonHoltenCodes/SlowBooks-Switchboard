@@ -61,6 +61,11 @@ FILLED = {
     "/api/bill-payments": {"pay_from_account_id": None},
 }
 KEYED = {"/api/payments", "/api/bill-payments"}
+# The sales documents with a Tax exempt switch of their own from SlowBooks
+# Pro 2.32.0; a credit memo has none.
+SWITCHED = {"/api/invoices", "/api/estimates", "/api/sales-receipts"}
+SALES = SWITCHED | {"/api/credit-memos"}
+CENT = Decimal("0.01")
 # What the app answers a DELETE with: customers, vendors and items are made
 # inactive (they keep their history); an account is removed.
 DEACTIVATES = {
@@ -96,6 +101,13 @@ class FakeBooks:
         self.journal_envelope = True
         # a tax_note the app itself puts on a new invoice's answer, when set
         self.api_tax_note = None
+        # True answers a new sales document as SlowBooks Pro 2.32.0 does: a
+        # missing tax_rate is the company's default, the document takes a
+        # tax_exempt switch (left out, it starts as its job is, else its
+        # customer) and the answer carries the switch and the amounts. False
+        # is 2.31.x, as the fixture's schemas are: no switch, no exempt job.
+        self.exemptions = False
+        self.jobs = {}
         self.spec = spec if spec is not None else load_spec()
         self.token = token
         self.role = role
@@ -153,6 +165,53 @@ class FakeBooks:
             )
         return row
 
+    def add_job(self, customer_id, name, is_taxable=True):
+        """A job of the customer's, as GET /api/jobs/{id} answers it. An
+        exempt job (is_taxable False) is 2.32.0's."""
+        rid = self._next
+        self._next += 1
+        job = {"id": rid, "customer_id": customer_id, "name": name}
+        if self.exemptions:
+            job["is_taxable"] = is_taxable
+        self.jobs[rid] = job
+        return job
+
+    def _settled(self, route, body):
+        """What 2.32.0 saves for a new sales document's tax: the rate (the
+        company's default when none is sent), whether it is exempt (a
+        non-taxable customer always; else the switch sent; else its job),
+        and the amounts. A credit memo is exempt as the invoice it credits
+        is, else as its customer."""
+        customer = self.records["/api/customers"].get(body.get("customer_id"), {})
+        original = self.records["/api/invoices"].get(body.get("original_invoice_id"))
+        rate = body.get("tax_rate")
+        if rate is None and original is not None:
+            rate = original.get("tax_rate")
+        if rate is None:
+            rate = Decimal(str(self.settings["default_tax_rate"])) / 100
+        if customer.get("is_taxable") is False:
+            exempt = True
+        elif route not in SWITCHED:
+            exempt = bool(original and original.get("tax_exempt"))
+        elif body.get("tax_exempt") is not None:
+            exempt = bool(body["tax_exempt"])
+        else:
+            job = self.jobs.get(body.get("job_id"), {})
+            exempt = job.get("is_taxable") is False
+        amounts = (Decimal(str(x.get("amount", 0))) for x in body["lines"])
+        subtotal = sum(amounts, Decimal(0))
+        tax = Decimal(0) if exempt else subtotal * Decimal(str(rate))
+        tax = tax.quantize(CENT)
+        out = {
+            "tax_rate": str(rate),
+            "subtotal": str(subtotal.quantize(CENT)),
+            "tax_amount": str(tax),
+            "total": str((subtotal + tax).quantize(CENT)),
+        }
+        if route in SWITCHED:
+            out["tax_exempt"] = exempt
+        return out
+
     def _schema(self, route, method):
         op = self.spec["paths"].get(route, {}).get(method, {})
         ref = (
@@ -174,6 +233,8 @@ class FakeBooks:
         props = schema.get("properties", {})
         if schema.get("additionalProperties") is False:
             for key in body:
+                if key == "tax_exempt" and self.exemptions and route in SWITCHED:
+                    continue
                 if key not in props:
                     errors.append(
                         {
@@ -289,6 +350,11 @@ class FakeBooks:
                 }
             return 200, rows
         m = re.fullmatch(r"(/api/[a-z-]+)/(\d+)", path)
+        if m and m.group(1) == "/api/jobs":
+            job = self.jobs.get(int(m.group(2)))
+            if job is None:
+                return 404, {"detail": "Job not found"}
+            return 200, job
         if m and m.group(1) in self.records:
             row = self.records[m.group(1)].get(int(m.group(2)))
             if row is None:
@@ -337,6 +403,8 @@ class FakeBooks:
                 }
         filled = {k: v for k, v in FILLED.get(path, {}).items() if body.get(k) is None}
         row = self._store(path, {**dict(body), **filled})
+        if self.exemptions and path in SALES:
+            row.update(self._settled(path, body))
         if path == "/api/invoices":
             row["status"] = "open"
             if self.api_tax_note:
@@ -345,6 +413,9 @@ class FakeBooks:
                 row["tax_note"] = self.api_tax_note
         if key:
             self.keys[(path, key)] = (digest, 201, row)
+        if self.exemptions and path == "/api/sales-receipts":
+            # 2.32.0 answers a sales receipt as its invoice and its payment
+            return 201, {"invoice": row, "payment": {"id": row["id"]}}
         return 201, row
 
     # -- the app's own sign-in (cookies), cut to what the door uses -----------
