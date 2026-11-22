@@ -4,11 +4,14 @@ In the product these ran against the app in-process with a real bookkeeper
 token; here they run against the fake API in tests/fakeapi.py, which serves
 the product's own OpenAPI document and checks bodies against its schemas."""
 
+import json
 import os
 import subprocess
 import sys
 
 import pytest
+from bookskit import ManyBooks
+from fakeapi import FakeInstall
 
 from sbplive import operations, tools
 from sbplive.client import ApiClient, ApiError, Refused
@@ -568,6 +571,26 @@ def test_context(api):
     assert ctx["company"] == "Acme Fence Test Co"
     assert ctx["app_version"]
     assert "closing_date" in ctx and "company_type" in ctx
+    # the whole company list is no longer read or given
+    assert "companies" not in ctx
+    assert "books" not in ctx and "company_file" not in ctx
+
+
+def test_context_on_several_companies(spec):
+    install = FakeInstall(
+        spec, {"north.db": "North Test Co", "south.db": "South Test Co"}
+    )
+    many = ManyBooks.of(install)
+    reg = build_registry(many)
+    overview = json.loads(reg.call("context", {})["content"][0]["text"])
+    assert [b["name"] for b in overview["books"]] == ["North Test Co", "South Test Co"]
+    assert set(overview) == {"books", "next"}
+    assert install.requests == []
+    one = reg.call("context", {"books": many.handle("south.db")})
+    ctx = json.loads(one["content"][1]["text"])
+    assert ctx["company"] == "South Test Co" and ctx["company_file"] == "south.db"
+    assert "companies" not in ctx
+    assert not [r for r in install.requests if r[3] == "/api/companies"]
 
 
 def test_search_list_and_get_a_customer(api):

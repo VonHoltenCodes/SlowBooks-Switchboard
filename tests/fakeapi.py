@@ -13,6 +13,7 @@ No real company's data: every name here is invented.
 import hashlib
 import json
 import re
+import secrets
 import threading
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -96,7 +97,20 @@ ACCOUNTANT_READ_REFUSAL = (
 
 
 class FakeBooks:
-    def __init__(self, spec=None, token: str = TOKEN_FAKE, role: str = "bookkeeper"):
+    def __init__(
+        self,
+        spec=None,
+        token: str = TOKEN_FAKE,
+        role: str = "bookkeeper",
+        company: str = COMPANY,
+        file: str = "acme-fence-test.db",
+    ):
+        self.company = company
+        self.file = file
+        # the token's name: an AI assistant's ends with its maker
+        self.label = "AI assistant (mcp-test)"
+        # True answers as a SlowBooks Pro before 2.32.0-beta.2: no /api/whoami
+        self.older = False
         # 2.32.0 answers the journal list as a page envelope; False = 2.31.x's list
         self.journal_envelope = True
         # a tax_note the app itself puts on a new invoice's answer, when set
@@ -117,7 +131,7 @@ class FakeBooks:
         self.calls = []
         self._next = 1
         self.settings = {
-            "company_name": COMPANY,
+            "company_name": company,
             "company_type": "llc",
             "closing_date": None,
             # a percent, as Settings keeps it
@@ -301,7 +315,7 @@ class FakeBooks:
 
     def _get(self, path, params):
         if path == "/api/auth/status":
-            return 200, {"authenticated": True, "company_name": COMPANY}
+            return 200, {"authenticated": True, "company_name": self.company}
         if path == "/api/settings":
             return 200, dict(self.settings)
         if path == "/api/system":
@@ -309,7 +323,18 @@ class FakeBooks:
         if path == "/api/employees":
             return 200, []
         if path == "/api/companies":
-            return 200, [{"name": COMPANY, "database": "acme-fence-test"}]
+            # 2.32.0-beta.2: a token reads only its own company's row
+            return 200, [{"name": self.company, "database": self.file[:-3]}]
+        if path == "/api/whoami" and self.older:
+            return 404, {"detail": "Not Found"}
+        if path == "/api/whoami":
+            return 200, {
+                "company_file": self.file,
+                "company_name": self.company,
+                "role": self.role,
+                "label": self.label,
+                "ends_with_maker": self.label.lower().startswith("ai assistant"),
+            }
         if path == "/api/search":
             q = str(params.get("q", "")).lower()
             out = {}
@@ -432,7 +457,7 @@ class FakeBooks:
                 "setup_needed": not self.users,
                 "authenticated": user is not None,
                 "multi_user": multi,
-                "company_name": COMPANY,
+                "company_name": self.company,
             }
             if user is not None:
                 out["user"] = {"username": user, "role": self.users[user]["role"]}
@@ -500,8 +525,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        refused = False
         if self.headers.get("Authorization") != f"Bearer {books.token}":
             status, payload = 401, {"detail": "Not authenticated"}
+            refused = True
         else:
             status, payload = books.handle(
                 self.command, parts.path, params, body, dict(self.headers)
@@ -510,6 +537,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        if refused:
+            self.send_header("X-SlowBooks-Token-Refused", "1")
         self.end_headers()
         self.wfile.write(data)
 
@@ -523,6 +552,127 @@ class FakeServer:
         self.books = books
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self.httpd.books = books
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+# ---------------------------------------------------------------------------
+# Several companies behind one app, as SlowBooks Pro 2.32.0-beta.2 serves
+# them to a token: X-SlowBooks-Company names the books (none: the company the
+# app started with); a repeated, blank, unknown or not-served name is a 421
+# before any token is read; a token works only in its own company; and every
+# answer to a token says which company served it.
+# ---------------------------------------------------------------------------
+
+UNSERVED = "This server does not serve that company for this request. Nothing was done."
+INVALID_TOKEN = "Invalid or revoked API token"
+
+
+def new_token() -> str:
+    return "sbp_" + secrets.token_urlsafe(24)
+
+
+class FakeInstall:
+    def __init__(self, spec, companies: dict, started: str | None = None):
+        """companies: file -> company name, in order; the first is the
+        company the app started with unless started says another."""
+        self.companies = {
+            file: FakeBooks(spec=spec, token=new_token(), company=name, file=file)
+            for file, name in companies.items()
+        }
+        self.started = started or next(iter(self.companies))
+        self.not_served: set = set()
+        # True answers as a SlowBooks Pro before 2.32.0-beta.2: no /api/whoami
+        self.older = False
+        # file -> what the served header says instead (None leaves it out)
+        self.stamp: dict = {}
+        self.requests: list = []  # (token, header values, method, path)
+
+    def token_of(self, file: str) -> str:
+        return self.companies[file].token
+
+    def answer(self, method, path, params, body, pairs, token):
+        """(status, payload, headers) for one request; pairs is every header
+        as sent, (name, value), so a repeated header is seen."""
+        named = [v for k, v in pairs if k.lower() == "x-slowbooks-company"]
+        self.requests.append((token, tuple(named), method, path))
+        if not named:
+            file = self.started
+        elif len(named) > 1 or not named[0].strip():
+            return 421, {"detail": UNSERVED}, {}
+        else:
+            file = named[0]
+        if file not in self.companies or file in self.not_served:
+            return 421, {"detail": UNSERVED}, {}
+        books = self.companies[file]
+        headers = {k: v for k, v in pairs}
+        if path == "/openapi.json" or path.startswith("/api/auth/"):
+            # answered before any token is read: no served header
+            status, payload = books.handle(method, path, params, body, headers)
+            return status, payload, {}
+        if token != books.token:
+            # the gate turned the token away, and says so
+            return 401, {"detail": INVALID_TOKEN}, {"X-SlowBooks-Token-Refused": "1"}
+        if self.older and path == "/api/whoami":
+            return 404, {"detail": "Not Found"}, {}
+        status, payload = books.handle(method, path, params, body, headers)
+        served = self.stamp.get(file, file)
+        out = {} if served is None else {"X-SlowBooks-Company-Served": served}
+        return status, payload, out
+
+    def transport(self, token: str):
+        """An ApiClient transport for one token, in-process."""
+
+        def send(method, path, params, body, headers):
+            pairs = list((headers or {}).items())
+            return self.answer(method, path, params, body, pairs, token)
+
+        return send
+
+
+class _InstallHandler(BaseHTTPRequestHandler):
+    def log_message(self, *a):  # keep test output quiet
+        pass
+
+    def _answer(self):
+        install = self.server.install
+        parts = urlsplit(self.path)
+        params = {k: v[-1] for k, v in parse_qs(parts.query).items()}
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        body = json.loads(raw) if raw else None
+        auth = self.headers.get("Authorization") or ""
+        token = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
+        status, payload, headers = install.answer(
+            self.command, parts.path, params, body, list(self.headers.items()), token
+        )
+        data = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        for name, value in headers.items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(data)
+
+    do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = _answer
+
+
+class FakeInstallServer:
+    """FakeInstall behind http.server on 127.0.0.1 and an ephemeral port."""
+
+    def __init__(self, install: FakeInstall):
+        self.install = install
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _InstallHandler)
+        self.httpd.install = install
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
 

@@ -143,9 +143,13 @@ Built as above, with these differences, each for a reason:
   a lock around each read-then-write (single-use codes, rotation), so a
   storage need not be atomic itself. Records are JSON-able dicts. A door
   passes the client's address in each request for the lockout.
-- **Known limits of the self-hosted sign-in:** on a Server Edition serving
-  several companies, the sign-in goes to the company the app opens by
-  default (the page has no company choice yet); the app's own limit of five
+- **Known limits of the self-hosted sign-in:** the door serves one
+  company. With setup's single token, the sign-in goes to the company the
+  app opens by default (the page has no company choice yet). With several
+  companies kept (`add-books`), the door serves the first of them and the
+  sign-in is sent to that company (`X-SlowBooks-Company`), so only its
+  administrators can let Claude in; each call names its books, and the
+  other companies are reached over stdio, not through this door; the app's own limit of five
   sign-ins a minute per address applies to the door as one address, and its
   refusal is shown as one sentence. Demoting an administrator does not end a
   connection already signed in until its refresh token runs out; deleting

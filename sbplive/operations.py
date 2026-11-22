@@ -52,7 +52,15 @@ KEYED = {
 }
 _KEY_HEADER = "idempotency-key"
 # Headers the client sets itself; a parameter never overrides them.
-_OWN_HEADERS = {"authorization", "cookie", "host", "content-type", "accept"}
+# X-SlowBooks-Company names the books, which only the client sets.
+_OWN_HEADERS = {
+    "authorization",
+    "cookie",
+    "host",
+    "content-type",
+    "accept",
+    "x-slowbooks-company",
+}
 _DESCRIPTION_CHARS = 1500
 _MAX_SCHEMAS = 60
 

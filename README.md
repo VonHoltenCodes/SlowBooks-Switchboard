@@ -60,6 +60,11 @@ argument).
 - `sbplive status` says whether SlowBooks Pro answers, which company and
   version, the token's role, whether Claude Desktop and Claude Code are
   connected, and where the log is.
+- `sbplive add-books --file smith-plumbing.db` adds another company's
+  books, under a bookkeeper token made in that company, to the same
+  connection (SlowBooks Pro 2.32.0-beta.2 or newer); Claude names the books
+  on every call by the handle it is given. `sbplive books` lists and checks
+  them, and `sbplive remove-books <handle>` takes one off.
 - `sbplive disconnect` takes it out of Claude Desktop and Claude Code;
   `--forget` also deletes the stored token. To lock it out for good, revoke
   the token in SlowBooks Pro under Settings, API Tokens.

@@ -11,4 +11,4 @@ Standard library only: the package imports nothing outside it, at run time
 or in its tests' fast path, so it runs on any Python 3.10 or newer.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
