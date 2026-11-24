@@ -449,3 +449,69 @@ def test_the_log_masks_anything_shaped_like_a_token(home):
     logging.getLogger("sbplive").error("oops %s", "Authorization: Bearer " + TOKEN_FAKE)
     assert TOKEN_FAKE not in path.read_text()
     assert "[hidden]" in path.read_text()
+
+
+def test_books_and_status_fail_alike_when_the_token_is_refused(
+    home, capsys, fake_server, token_path, monkeypatch
+):
+    monkeypatch.setattr(hosts, "find_claude", lambda: None)
+    assert run(capsys, *setup_args(fake_server, token_path))[0] == 0
+    assert run(capsys, "books")[0] == 0
+    store.token_path().write_text(WRONG_FAKE + "\n")
+    code, out = run(capsys, "books")
+    assert code == 1
+    assert "did not accept the API token" in out and WRONG_FAKE not in out
+    assert run(capsys, "status")[0] == 1
+
+
+def test_books_fails_when_the_app_does_not_answer(
+    home, capsys, fake_server, token_path, monkeypatch
+):
+    monkeypatch.setattr(hosts, "find_claude", lambda: None)
+    assert run(capsys, *setup_args(fake_server, token_path))[0] == 0
+    monkeypatch.setenv("SBPLIVE_URL", "http://127.0.0.1:9")
+    code, out = run(capsys, "books")
+    assert code == 1 and "did not answer at http://127.0.0.1:9" in out
+    assert run(capsys, "status")[0] == 1
+
+
+def _log_mode(path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+def test_the_log_is_yours_only(home, monkeypatch):
+    import logging
+
+    from sbplive import logs
+
+    old = os.umask(0o022)
+    try:
+        path = logs.setup()
+    finally:
+        os.umask(old)
+    assert _log_mode(path) == 0o600
+    assert _log_mode(path.parent) == 0o700
+    monkeypatch.setattr(logs, "MAX_BYTES", 200)
+    path = logs.setup()
+    for n in range(20):
+        logging.getLogger("sbplive").error("line %d %s", n, "x" * 40)
+    rotated = path.with_name(path.name + ".1")
+    assert rotated.exists()
+    assert _log_mode(rotated) == 0o600 and _log_mode(path) == 0o600
+    logs.setup(to_file=False)
+
+
+def test_a_wider_log_is_tightened(home):
+    from sbplive import logs
+
+    store.ensure_dir()
+    path = store.log_path()
+    path.write_text("an older line\n")
+    path.chmod(0o644)
+    rotated = path.with_name(path.name + ".2")
+    rotated.write_text("an older copy\n")
+    rotated.chmod(0o644)
+    assert logs.setup() == path
+    assert _log_mode(path) == 0o600 and _log_mode(rotated) == 0o600
+    assert path.read_text().startswith("an older line\n")
+    logs.setup(to_file=False)

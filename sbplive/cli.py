@@ -657,15 +657,17 @@ def cmd_books(args) -> int:
             "This computer keeps one company's token, from setup, and no list "
             "of companies."
         )
+        code = 0
         try:
             _say(probe.check(config).sentence())
         except probe.ProbeError as exc:
             _say(str(exc))
+            code = 1
         _say(
             f"To add another company to the same connection: {PROG} add-books "
             "--file <its company file>."
         )
-        return 0
+        return code
     _say(f"{len(config.books)} companies' books are kept for {config.base_url}:")
     return _say_books(config)
 

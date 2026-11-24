@@ -85,7 +85,19 @@ stored token and address and the entries it made; nothing doubles up.
 An accountant who keeps the books of several clients can reach each of them
 through the same connection, so Claude needs no second entry. This needs
 SlowBooks Pro 2.32.0-beta.2 or newer, which can say which company a token
-opens. For each company:
+opens, running as **Server Edition**: started with `--serve-lan` (and not
+with `--bind 127.0.0.1`, which turns Server Edition off), it serves every
+company in its list of companies. The SlowBooks Pro window serves only the
+company open in it, and `--no-window` only the company it starts with, so
+there `add-books` cannot add a second company (it says SlowBooks Pro does
+not serve it, or does not accept the token setup stored), and with another
+company opened, the first company's token is refused. On one computer,
+close the SlowBooks Pro window, start it with `--serve-lan`, and give setup
+one of the addresses it shows (they are also in `connect-urls.txt` in its
+data folder). Server Edition serves the office network, so the other
+computers there can reach its sign-in screen. A company file encrypted at
+the SlowBooks Pro window, under a recovery key, opens only there: Server
+Edition does not serve it. For each company:
 
 1. In SlowBooks Pro, open that company, sign in as its administrator, and
    make a **Bookkeeper** token under Settings, API Tokens, with a name that
@@ -109,14 +121,19 @@ bookkeeper's. It then says:
 Added Smith Plumbing's books as smith-plumbing~k3f9q2 (bookkeeper).
 ```
 
-`smith-plumbing~k3f9q2` is the company's **handle**. The last six letters
-are random and made on this computer when the company is added, so no other
-computer's handle, and no company's name or file, ever reaches these books.
-Claude reads the handles with its `context` tool and names one on every call
-(the `books` argument). With one company on the connection it may leave it
-out; with more it must give it, and a call that names none is refused before
-anything is sent. Every answer then starts with the company it came from,
-such as "Books: Smith Plumbing (smith-plumbing~k3f9q2)."
+`smith-plumbing~k3f9q2` is the company's **handle**. The last six
+characters, lowercase letters and the digits 2 to 7, are random and made on
+this computer when the company is added, so no other computer's handle, and
+no company's name or file, ever reaches these books. Claude reads the
+handles with its `context` tool and names one on every call (the `books`
+argument). With one company on the connection it may leave it out; with
+more it must give it, and a call that names none is refused before anything
+is sent. With more than one company, the answer to a call that names one by
+its handle starts with that company, refusals included, such as "Books:
+Smith Plumbing (smith-plumbing~k3f9q2)." `context` called without `books`
+answers with the list of handles instead, and the refusal of a call that
+names no company, or names one by anything but its handle, does not start
+with a company.
 
 The first `add-books` keeps the token setup stored as the first company,
 with a handle of its own: nothing has to be set up again. A connection
@@ -148,7 +165,7 @@ Switchboard 1.0.0 it still reaches that first company (and only that one);
 |---|---|
 | The token, the address and (for [REMOTE.md](REMOTE.md)) the connector secret and `oauth.json`, the remote door's sign-ins (hashes only, never a password) | Windows: `%APPDATA%\sbplive\`; Mac: `~/Library/Application Support/sbplive/`; Linux: `~/.config/sbplive/` |
 | Several companies (`add-books`) | Each company's token in `books/<handle>.token` in the same folder (the folder and the files readable by you only); `settings.json` lists each company's handle, file and name, and a hash of its token, never the token |
-| The log | `sbplive.log` in the same folder, up to 1 MB and three older copies. It holds the method, address and answer code of each request, never the token or what was sent |
+| The log | `sbplive.log` in the same folder, up to 1 MB and three older copies. At the default level it holds only warnings and errors, such as a tool that hit an internal error or, with several companies, a company's token SlowBooks Pro refused, so it is often empty; with `SBPLIVE_LOG=INFO` it also holds the method, path and answer code of each request. Never the token or what was sent |
 | Claude Desktop's entry | `claude_desktop_config.json` (Mac: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\` and the Microsoft Store app's own copy, Linux: `~/.config/Claude/`), as `"sbplive"`; it names the program only, never the token |
 | Claude Code's entry | Your user's Claude Code settings, through `claude mcp add --scope user` |
 
