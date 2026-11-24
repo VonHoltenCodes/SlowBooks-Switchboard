@@ -10,7 +10,7 @@ token's role allows, holds no books, never touches the company file or the
 database, and sends nothing anywhere but your own SlowBooks Pro. Every change
 Claude makes is in SlowBooks Pro's audit log as `token:<label>`.
 
-- Free and open source under the [Apache License 2.0](LICENSE).
+- Free, under the [Apache License 2.0](LICENSE).
 - Python 3.10 to 3.13, standard library only: nothing else to install.
 - Both protocol revisions, 2025-11-25 (by handshake) and 2026-07-28 (per
   request), on stdio and over Streamable HTTP ([docs/PROTOCOL.md](docs/PROTOCOL.md)).
@@ -40,8 +40,10 @@ with nothing installed.
 ## Set it up
 
 1. In SlowBooks Pro, signed in as an administrator, open **Settings, API
-   Tokens** and make a token: a label you will recognize (it names every
-   change Claude makes) and the role Claude should have, **Read-only**,
+   Tokens** and make a token: a name that starts with "AI assistant", such
+   as `AI assistant (Switchboard)` (it names every change Claude makes, and
+   against SlowBooks Pro 2.32.0-beta.2 or newer setup refuses a new token
+   with any other name), and the role Claude should have, **Read-only**,
    **Bookkeeper** or **Accountant**. A bookkeeper token is the usual choice.
    Copy it: it is shown once.
 2. Run `sbplive setup`. It asks where the books are (Enter for this
@@ -62,9 +64,12 @@ argument).
   connected, and where the log is.
 - `sbplive add-books --file smith-plumbing.db` adds another company's
   books, under a bookkeeper token made in that company, to the same
-  connection (SlowBooks Pro 2.32.0-beta.2 or newer); Claude names the books
-  on every call by the handle it is given. `sbplive books` lists and checks
-  them, and `sbplive remove-books <handle>` takes one off.
+  connection; Claude names the books on every call by the handle it is
+  given. This needs SlowBooks Pro 2.32.0-beta.2 or newer running as
+  **Server Edition** (started with `--serve-lan`), which serves every company
+  in its list: the SlowBooks Pro window serves only the company open in it.
+  `sbplive books` lists and checks them, and `sbplive remove-books
+  <handle>` takes one off.
 - `sbplive disconnect` takes it out of Claude Desktop and Claude Code;
   `--forget` also deletes the stored token. To lock it out for good, revoke
   the token in SlowBooks Pro under Settings, API Tokens.

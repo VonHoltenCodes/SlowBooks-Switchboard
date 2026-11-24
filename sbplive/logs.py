@@ -12,6 +12,10 @@
 # anything shaped like one of this program's secrets (sbp_..., sbc_...,
 # sbo_... and the rest of the sb?_ family) or an Authorization header in
 # case a message ever carries one.
+#
+# On POSIX the file and its rotated copies are readable by you only (600),
+# as the token store's files are, and a log left wider by an older version
+# is tightened when it is opened. Windows keeps the folder's own access.
 # ============================================================================
 
 import logging
@@ -28,6 +32,27 @@ BACKUPS = 3
 _LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 _SECRET = re.compile(r"(\bsb[a-z]_[A-Za-z0-9_\-]+|Bearer\s+\S+)")
 _FORMAT = "%(asctime)s sbplive %(levelname)s %(message)s"
+
+
+class _PrivateFileHandler(logging.handlers.RotatingFileHandler):
+    """RotatingFileHandler whose file is created 600 on POSIX. A rotated
+    copy is the same file renamed, so it keeps that mode; copies left wider
+    are tightened too."""
+
+    def _open(self):
+        if os.name != "nt":
+            fd = os.open(
+                self.baseFilename, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
+            )
+            os.close(fd)
+            os.chmod(self.baseFilename, 0o600)
+            # BACKUPS, not self.backupCount: that is set after the first open.
+            for n in range(1, BACKUPS + 1):
+                try:
+                    os.chmod(f"{self.baseFilename}.{n}", 0o600)
+                except OSError:
+                    pass
+        return super()._open()
 
 
 class _MaskSecrets(logging.Filter):
@@ -65,7 +90,7 @@ def setup(to_file: bool = True):
     path = store.log_path()
     try:
         store.ensure_dir()
-        fh = logging.handlers.RotatingFileHandler(
+        fh = _PrivateFileHandler(
             path, maxBytes=MAX_BYTES, backupCount=BACKUPS, encoding="utf-8"
         )
     except OSError:

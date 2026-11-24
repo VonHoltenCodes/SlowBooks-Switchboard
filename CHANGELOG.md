@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `sbplive books` with one company kept now ends with exit status 1 when
+  SlowBooks Pro does not accept the stored token or does not answer, as
+  `sbplive status` does. It ended with 0.
+- The log, `sbplive.log`, and its older copies are readable by you only
+  (mode 600) on macOS and Linux; a log an earlier version left readable
+  by others is tightened when the program next opens it. Nothing changes
+  on Windows.
+
 ## 1.1.0
 
 For SlowBooks Pro 2.32.0-beta.2 and newer.
